@@ -30,6 +30,7 @@ docker-compose.override.yml
 *.db
 *.sqlite
 *.sqlite3
+apps/api/data/
 
 # Logs
 logs/
