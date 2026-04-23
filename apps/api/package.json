@@ -12,10 +12,13 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.12.0",
+    "@updraft/shared-types": "workspace:*",
+    "better-sqlite3": "^12.9.0",
     "hono": "^4.3.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
     "tsx": "^4.7.0",
     "typescript": "^5.4.0",
