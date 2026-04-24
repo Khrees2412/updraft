@@ -7,7 +7,7 @@ export function runMigrations(db: Database.Database): void {
       sourceType  TEXT NOT NULL CHECK(sourceType IN ('git', 'upload')),
       sourceRef   TEXT NOT NULL,
       status      TEXT NOT NULL DEFAULT 'pending'
-                    CHECK(status IN ('pending','building','deploying','running','failed')),
+                    CHECK(status IN ('pending','building','deploying','live','failed','cancelled')),
       imageTag    TEXT,
       containerId TEXT,
       routePath   TEXT,

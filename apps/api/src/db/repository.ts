@@ -57,14 +57,15 @@ function rowToLogEvent(row: DeploymentLogRow): DeploymentLogEvent {
   };
 }
 
-// Deployment lifecycle: pending -> building -> deploying -> running.
-// Any non-terminal state may transition to failed. running/failed are terminal.
+// Deployment lifecycle: pending -> building -> deploying -> live.
+// Any non-terminal state may transition to failed or cancelled. live/failed/cancelled are terminal.
 const ALLOWED_TRANSITIONS: Record<DeploymentStatus, DeploymentStatus[]> = {
-  pending: ['building', 'failed'],
-  building: ['deploying', 'failed'],
-  deploying: ['running', 'failed'],
-  running: [],
+  pending: ['building', 'failed', 'cancelled'],
+  building: ['deploying', 'failed', 'cancelled'],
+  deploying: ['live', 'failed', 'cancelled'],
+  live: [],
   failed: [],
+  cancelled: [],
 };
 
 export function isValidStatusTransition(
@@ -133,6 +134,17 @@ export function createDeploymentRepository(db: Database.Database) {
       return rows.map(rowToDeployment);
     },
 
+    claim(): Deployment | null {
+      const row = db
+        .prepare(
+          `UPDATE deployments SET status = 'building', updatedAt = ? 
+           WHERE id = (SELECT id FROM deployments WHERE status = 'pending' ORDER BY createdAt ASC LIMIT 1)
+           RETURNING *`,
+        )
+        .get(new Date().toISOString()) as DeploymentRow | undefined;
+      return row ? rowToDeployment(row) : null;
+    },
+
     updateStatus(id: string, next: DeploymentStatus): Deployment {
       const current = this.getById(id);
       if (!current) throw new DeploymentNotFoundError(id);
@@ -143,6 +155,37 @@ export function createDeploymentRepository(db: Database.Database) {
       db.prepare(
         `UPDATE deployments SET status = ?, updatedAt = ? WHERE id = ?`,
       ).run(next, now, id);
+      return { ...current, status: next, updatedAt: now };
+    },
+
+    updateStatusWithLog(
+      id: string,
+      next: DeploymentStatus,
+      logStage: LogStage,
+      logMessage: string,
+    ): Deployment {
+      const current = this.getById(id);
+      if (!current) throw new DeploymentNotFoundError(id);
+      if (!isValidStatusTransition(current.status, next)) {
+        throw new InvalidStatusTransitionError(current.status, next);
+      }
+      const now = new Date().toISOString();
+      const run = db.transaction(() => {
+        db.prepare(
+          `UPDATE deployments SET status = ?, updatedAt = ? WHERE id = ?`,
+        ).run(next, now, id);
+        const seqRow = db
+          .prepare(
+            `SELECT COALESCE(MAX(sequence), 0) + 1 AS next FROM deployment_logs WHERE deploymentId = ?`,
+          )
+          .get(id) as { next: number };
+        const seq = seqRow.next;
+        db.prepare(
+          `INSERT INTO deployment_logs (id, deploymentId, stage, message, timestamp, sequence)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        ).run(randomUUID(), id, logStage, logMessage, now, seq);
+      });
+      run();
       return { ...current, status: next, updatedAt: now };
     },
 

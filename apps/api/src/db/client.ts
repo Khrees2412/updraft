@@ -17,3 +17,8 @@ export function getDb(): Database.Database {
   }
   return _db;
 }
+
+export function withTransaction<T>(db: Database.Database, fn: () => T): T {
+  const run = db.transaction(fn);
+  return run();
+}

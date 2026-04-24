@@ -3,18 +3,25 @@ import { streamSSE } from 'hono/streaming';
 import type Database from 'better-sqlite3';
 import { createDeploymentRepository, createLogRepository, DeploymentNotFoundError } from '../db/repository.js';
 import { createDeploymentSchema } from '../schemas.js';
-import { handleError, BadRequestError } from '../lib/errors.js';
+import { handleError, BadRequestError, ConflictError } from '../lib/errors.js';
 import { subscribe } from '../sse/broker.js';
+import { getPipelineQueue } from '../pipeline/index.js';
+import { isTerminalDeploymentStatus } from '@updraft/shared-types';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 
 const UPLOAD_DIR = process.env['UPLOAD_DIR'] ?? path.join(process.cwd(), 'data', 'uploads');
 
-export function createDeploymentsRouter(db: Database.Database) {
+export interface DeploymentsRouterOptions {
+  enqueue?: (deploymentId: string) => void;
+}
+
+export function createDeploymentsRouter(db: Database.Database, options: DeploymentsRouterOptions = {}) {
   const router = new Hono();
   const deployments = createDeploymentRepository(db);
   const logs = createLogRepository(db);
+  const enqueue = options.enqueue ?? ((id: string) => getPipelineQueue(db).enqueue(id));
 
   // POST /deployments — create and enqueue
   router.post('/', async (c) => {
@@ -44,6 +51,7 @@ export function createDeploymentsRouter(db: Database.Database) {
       }
 
       const deployment = deployments.create({ sourceType, sourceRef });
+      enqueue(deployment.id);
       return c.json({ success: true, message: 'Deployment created', data: deployment }, 201);
     } catch (err) {
       return handleError(c, err);
@@ -71,6 +79,21 @@ export function createDeploymentsRouter(db: Database.Database) {
     }
   });
 
+  // POST /deployments/:id/cancel — cancel a non-terminal deployment
+  router.post('/:id/cancel', async (c) => {
+    try {
+      const deployment = deployments.getById(c.req.param('id'));
+      if (!deployment) throw new DeploymentNotFoundError(c.req.param('id'));
+      if (isTerminalDeploymentStatus(deployment.status)) {
+        throw new ConflictError(`Deployment is already in a terminal state: ${deployment.status}`);
+      }
+      const updated = deployments.updateStatus(deployment.id, 'cancelled');
+      return c.json({ success: true, message: 'Deployment cancelled', data: updated });
+    } catch (err) {
+      return handleError(c, err);
+    }
+  });
+
   // GET /deployments/:id/logs/stream — SSE stream
   router.get('/:id/logs/stream', async (c) => {
     const deploymentId = c.req.param('id');
@@ -87,8 +110,7 @@ export function createDeploymentsRouter(db: Database.Database) {
         await stream.writeSSE({ event: 'log', data: JSON.stringify(event) });
       }
 
-      // If terminal, send done and close
-      if (deployment.status === 'running' || deployment.status === 'failed') {
+      if (isTerminalDeploymentStatus(deployment.status)) {
         await stream.writeSSE({ event: 'done', data: JSON.stringify({ status: deployment.status }) });
         return;
       }
@@ -100,7 +122,7 @@ export function createDeploymentsRouter(db: Database.Database) {
             await stream.writeSSE({ event: 'log', data: JSON.stringify(msg.data) });
           } else if (msg.type === 'status') {
             await stream.writeSSE({ event: 'status', data: JSON.stringify(msg.data) });
-            if (msg.data.status === 'running' || msg.data.status === 'failed') {
+            if (isTerminalDeploymentStatus(msg.data.status)) {
               await stream.writeSSE({ event: 'done', data: JSON.stringify({ status: msg.data.status }) });
               unsubscribe();
               resolve();

@@ -25,7 +25,7 @@ describe('deployments router', () => {
   });
 
   it('rejects malformed JSON body with 400', async () => {
-    const router = createDeploymentsRouter(db);
+    const router = createDeploymentsRouter(db, { enqueue: () => {} });
     const res = await router.request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -37,7 +37,7 @@ describe('deployments router', () => {
   });
 
   it('rejects body missing both gitUrl and archiveRef with 400', async () => {
-    const router = createDeploymentsRouter(db);
+    const router = createDeploymentsRouter(db, { enqueue: () => {} });
     const res = await router.request('/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -47,13 +47,13 @@ describe('deployments router', () => {
   });
 
   it('rejects invalid gitUrl with 400', async () => {
-    const router = createDeploymentsRouter(db);
+    const router = createDeploymentsRouter(db, { enqueue: () => {} });
     const res = await router.request(jsonRequest('/', { gitUrl: 'not a url' }));
     expect(res.status).toBe(400);
   });
 
   it('creates a deployment from a git url', async () => {
-    const router = createDeploymentsRouter(db);
+    const router = createDeploymentsRouter(db, { enqueue: () => {} });
     const res = await router.request(jsonRequest('/', { gitUrl: 'https://example.com/r.git' }));
     expect(res.status).toBe(201);
     const json = (await res.json()) as { data: { id: string; status: string; sourceType: string } };
@@ -63,8 +63,12 @@ describe('deployments router', () => {
   });
 
   it('lists created deployments newest-first', async () => {
-    const router = createDeploymentsRouter(db);
+    const router = createDeploymentsRouter(db, { enqueue: () => {} });
     await router.request(jsonRequest('/', { gitUrl: 'https://example.com/a.git' }));
+    db.prepare(`UPDATE deployments SET createdAt = ?, updatedAt = ?`).run(
+      '2020-01-01T00:00:00.000Z',
+      '2020-01-01T00:00:00.000Z',
+    );
     await router.request(jsonRequest('/', { gitUrl: 'https://example.com/b.git' }));
     const res = await router.request('/', { method: 'GET' });
     expect(res.status).toBe(200);
@@ -74,8 +78,34 @@ describe('deployments router', () => {
   });
 
   it('returns 404 for unknown deployment id', async () => {
-    const router = createDeploymentsRouter(db);
+    const router = createDeploymentsRouter(db, { enqueue: () => {} });
     const res = await router.request('/does-not-exist', { method: 'GET' });
+    expect(res.status).toBe(404);
+  });
+
+  it('cancels a pending deployment', async () => {
+    const router = createDeploymentsRouter(db, { enqueue: () => {} });
+    const created = await router.request(jsonRequest('/', { gitUrl: 'https://example.com/r.git' }));
+    const { data } = (await created.json()) as { data: { id: string } };
+    const res = await router.request(`/${data.id}/cancel`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { success: boolean; data: { status: string } };
+    expect(json.success).toBe(true);
+    expect(json.data.status).toBe('cancelled');
+  });
+
+  it('returns 409 when cancelling an already-terminal deployment', async () => {
+    const router = createDeploymentsRouter(db, { enqueue: () => {} });
+    const created = await router.request(jsonRequest('/', { gitUrl: 'https://example.com/r.git' }));
+    const { data } = (await created.json()) as { data: { id: string } };
+    await router.request(`/${data.id}/cancel`, { method: 'POST' });
+    const res = await router.request(`/${data.id}/cancel`, { method: 'POST' });
+    expect(res.status).toBe(409);
+  });
+
+  it('returns 404 when cancelling an unknown deployment', async () => {
+    const router = createDeploymentsRouter(db, { enqueue: () => {} });
+    const res = await router.request('/does-not-exist/cancel', { method: 'POST' });
     expect(res.status).toBe(404);
   });
 });

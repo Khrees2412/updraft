@@ -9,6 +9,27 @@ export class BadRequestError extends Error {
   }
 }
 
+export class SourceAcquisitionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SourceAcquisitionError';
+  }
+}
+
+export class BuildFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BuildFailedError';
+  }
+}
+
+export class ConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConflictError';
+  }
+}
+
 export function handleError(c: Context, err: unknown): Response {
   if (err instanceof ZodError) {
     const flat = err.flatten();
@@ -22,6 +43,9 @@ export function handleError(c: Context, err: unknown): Response {
   }
   if (err instanceof DeploymentNotFoundError) {
     return c.json({ success: false, message: err.message, data: null }, 404);
+  }
+  if (err instanceof ConflictError) {
+    return c.json({ success: false, message: err.message, data: null }, 409);
   }
   console.error(err);
   return c.json({ success: false, message: 'Internal server error', data: null }, 500);

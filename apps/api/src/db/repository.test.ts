@@ -74,7 +74,7 @@ describe('deployment repository', () => {
     const d = repo.create({ sourceType: 'git', sourceRef: 'r' });
     expect(repo.updateStatus(d.id, 'building').status).toBe('building');
     expect(repo.updateStatus(d.id, 'deploying').status).toBe('deploying');
-    expect(repo.updateStatus(d.id, 'running').status).toBe('running');
+    expect(repo.updateStatus(d.id, 'live').status).toBe('live');
   });
 
   it('allows any non-terminal state to transition to failed', () => {
@@ -83,13 +83,20 @@ describe('deployment repository', () => {
     expect(repo.updateStatus(d.id, 'failed').status).toBe('failed');
   });
 
+  it('allows any non-terminal state to transition to cancelled', () => {
+    const repo = createDeploymentRepository(db);
+    const d = repo.create({ sourceType: 'git', sourceRef: 'r' });
+    repo.updateStatus(d.id, 'building');
+    expect(repo.updateStatus(d.id, 'cancelled').status).toBe('cancelled');
+  });
+
   it('rejects invalid status transitions', () => {
     const repo = createDeploymentRepository(db);
     const d = repo.create({ sourceType: 'git', sourceRef: 'r' });
-    expect(() => repo.updateStatus(d.id, 'running')).toThrow(InvalidStatusTransitionError);
+    expect(() => repo.updateStatus(d.id, 'live')).toThrow(InvalidStatusTransitionError);
     repo.updateStatus(d.id, 'building');
     repo.updateStatus(d.id, 'deploying');
-    repo.updateStatus(d.id, 'running');
+    repo.updateStatus(d.id, 'live');
     expect(() => repo.updateStatus(d.id, 'failed')).toThrow(InvalidStatusTransitionError);
   });
 
@@ -102,7 +109,9 @@ describe('deployment repository', () => {
   it('exposes isValidStatusTransition helper', () => {
     expect(isValidStatusTransition('pending', 'building')).toBe(true);
     expect(isValidStatusTransition('pending', 'deploying')).toBe(false);
-    expect(isValidStatusTransition('running', 'failed')).toBe(false);
+    expect(isValidStatusTransition('live', 'failed')).toBe(false);
+    expect(isValidStatusTransition('pending', 'cancelled')).toBe(true);
+    expect(isValidStatusTransition('cancelled', 'failed')).toBe(false);
   });
 });
 

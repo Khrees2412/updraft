@@ -1,5 +1,11 @@
 // Deployment status state machine
-export type DeploymentStatus = 'pending' | 'building' | 'deploying' | 'running' | 'failed';
+export type DeploymentStatus = 'pending' | 'building' | 'deploying' | 'live' | 'failed' | 'cancelled';
+
+export const TERMINAL_DEPLOYMENT_STATUSES = ['live', 'failed', 'cancelled'] as const satisfies readonly DeploymentStatus[];
+
+export function isTerminalDeploymentStatus(status: DeploymentStatus): boolean {
+  return (TERMINAL_DEPLOYMENT_STATUSES as readonly DeploymentStatus[]).includes(status);
+}
 
 // Source type for deployments
 export type DeploymentSourceType = 'git' | 'upload';
