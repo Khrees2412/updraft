@@ -56,11 +56,14 @@ describe('docker runner', () => {
         [
           { stdout: [], exitCode: 1 },
           { stdout: ['abc1234567890def1234567890abcdef1234567890abcdef1234567890abcd'], exitCode: 0 },
+          { stdout: ['{"Status":"running","Health":{"Status":"healthy"}}'], exitCode: 0 },
         ],
         calls,
       ),
       network: 'testnet',
       internalPort: 3000,
+      healthCheckIntervalMs: 1,
+      healthCheckTimeoutMs: 10,
     });
     const logger = loggerStub();
     const result = await runner.run({ deployment, imageTag: 'dep-abc:42', logger });
@@ -80,6 +83,7 @@ describe('docker runner', () => {
       '--label', 'updraft.port=3000',
       'dep-abc:42',
     ]);
+    expect(calls[2]?.args).toEqual(['inspect', '--format', '{{json .State}}', 'dep-abc']);
 
     expect(logger.lines.some((l) => l.includes('Starting container dep-abc'))).toBe(true);
   });
@@ -112,6 +116,26 @@ describe('docker runner', () => {
         calls,
       ),
     });
+    await expect(
+      runner.run({ deployment, imageTag: 'dep-abc:42', logger: loggerStub() }),
+    ).rejects.toBeInstanceOf(DeployFailedError);
+  });
+
+  it('throws DeployFailedError when the container exits during health checks', async () => {
+    const calls: SpawnCall[] = [];
+    const runner = createDockerRunner({
+      spawn: scriptedSpawn(
+        [
+          { stdout: [], exitCode: 0 },
+          { stdout: ['abc1234567890def1234567890abcdef1234567890abcdef1234567890abcd'], exitCode: 0 },
+          { stdout: ['{"Status":"exited"}'], exitCode: 0 },
+        ],
+        calls,
+      ),
+      healthCheckIntervalMs: 1,
+      healthCheckTimeoutMs: 10,
+    });
+
     await expect(
       runner.run({ deployment, imageTag: 'dep-abc:42', logger: loggerStub() }),
     ).rejects.toBeInstanceOf(DeployFailedError);

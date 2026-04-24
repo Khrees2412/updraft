@@ -7,9 +7,11 @@ export function runMigrations(db: Database.Database): void {
       source_type TEXT NOT NULL CHECK(source_type IN ('git', 'upload')),
       source_ref  TEXT NOT NULL,
       status      TEXT NOT NULL DEFAULT 'pending'
-                    CHECK(status IN ('pending','building','deploying','live','failed','cancelled')),
+                    CHECK(status IN ('pending','building','deploying','running','failed','cancelled')),
       image_tag   TEXT,
       container_id TEXT,
+      container_name TEXT,
+      internal_port INTEGER,
       route_path  TEXT,
       live_url    TEXT,
       created_at  TEXT NOT NULL,
@@ -22,7 +24,8 @@ export function runMigrations(db: Database.Database): void {
       stage         TEXT NOT NULL CHECK(stage IN ('build','deploy','system')),
       message       TEXT NOT NULL,
       timestamp     TEXT NOT NULL,
-      sequence      INTEGER NOT NULL
+      sequence      INTEGER NOT NULL,
+      UNIQUE(deployment_id, sequence)
     );
 
     CREATE INDEX IF NOT EXISTS idx_deployment_logs_deployment

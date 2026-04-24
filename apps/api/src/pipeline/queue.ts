@@ -26,35 +26,32 @@ export function createPipelineQueue(
   const tick = (): void => {
     if (current || stopped) return;
     const next = pending.shift();
-    if (next === undefined) {
-      const claimed = deps.deployments.claim();
-      if (claimed) {
-        current = run(claimed.id)
-          .catch((err) => {
-            console.error(`pipeline run failed for ${claimed.id}:`, err);
-          })
-          .finally(() => {
-            current = null;
-            tick();
-          });
-      } else {
-        setTimeout(tick, pollIntervalMs);
-      }
+    const claimed = next === undefined
+      ? deps.deployments.claim()
+      : deps.deployments.claimById(next);
+    if (claimed) {
+      current = run(claimed.id)
+        .catch((err) => {
+          console.error(`pipeline run failed for ${claimed.id}:`, err);
+        })
+        .finally(() => {
+          current = null;
+          tick();
+        });
       return;
     }
-    current = run(next)
-      .catch((err) => {
-        console.error(`pipeline run failed for ${next}:`, err);
-      })
-      .finally(() => {
-        current = null;
-        tick();
-      });
+
+    if (next === undefined) {
+      setTimeout(tick, pollIntervalMs);
+      return;
+    }
+
+    tick();
   };
 
   return {
     enqueue(deploymentId) {
-      pending.push(deploymentId);
+      if (!pending.includes(deploymentId)) pending.push(deploymentId);
       tick();
     },
     size() {

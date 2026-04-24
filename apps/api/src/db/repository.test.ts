@@ -59,11 +59,15 @@ describe('deployment repository', () => {
     const updated = repo.updateFields(d.id, {
       image_tag: 'dep-1:abc',
       container_id: 'c1',
+      container_name: 'dep-1',
+      internal_port: 3000,
       route_path: '/d/1',
       live_url: 'http://localhost/d/1',
     });
     expect(updated.image_tag).toBe('dep-1:abc');
     expect(updated.container_id).toBe('c1');
+    expect(updated.container_name).toBe('dep-1');
+    expect(updated.internal_port).toBe(3000);
     expect(updated.route_path).toBe('/d/1');
     expect(updated.live_url).toBe('http://localhost/d/1');
     expect(updated.updated_at).toBeTruthy();
@@ -74,7 +78,7 @@ describe('deployment repository', () => {
     const d = repo.create({ source_type: 'git', source_ref: 'r' });
     expect(repo.updateStatus(d.id, 'building').status).toBe('building');
     expect(repo.updateStatus(d.id, 'deploying').status).toBe('deploying');
-    expect(repo.updateStatus(d.id, 'live').status).toBe('live');
+    expect(repo.updateStatus(d.id, 'running').status).toBe('running');
   });
 
   it('allows any non-terminal state to transition to failed', () => {
@@ -93,10 +97,10 @@ describe('deployment repository', () => {
   it('rejects invalid status transitions', () => {
     const repo = createDeploymentRepository(db);
     const d = repo.create({ source_type: 'git', source_ref: 'r' });
-    expect(() => repo.updateStatus(d.id, 'live')).toThrow(InvalidStatusTransitionError);
+    expect(() => repo.updateStatus(d.id, 'running')).toThrow(InvalidStatusTransitionError);
     repo.updateStatus(d.id, 'building');
     repo.updateStatus(d.id, 'deploying');
-    repo.updateStatus(d.id, 'live');
+    repo.updateStatus(d.id, 'running');
     expect(() => repo.updateStatus(d.id, 'failed')).toThrow(InvalidStatusTransitionError);
     expect(() => repo.updateStatus(d.id, 'cancelled')).toThrow(InvalidStatusTransitionError);
   });
@@ -110,7 +114,7 @@ describe('deployment repository', () => {
   it('exposes isValidStatusTransition helper', () => {
     expect(isValidStatusTransition('pending', 'building')).toBe(true);
     expect(isValidStatusTransition('pending', 'deploying')).toBe(false);
-    expect(isValidStatusTransition('live', 'failed')).toBe(false);
+    expect(isValidStatusTransition('running', 'failed')).toBe(false);
     expect(isValidStatusTransition('pending', 'cancelled')).toBe(true);
     expect(isValidStatusTransition('cancelled', 'failed')).toBe(false);
   });
@@ -154,5 +158,22 @@ describe('log repository', () => {
 
     const tail = logs.listByDeployment(d.id, { afterSequence: 1 });
     expect(tail.map((e) => e.message)).toEqual(['b', 'c']);
+  });
+
+  it('enforces UNIQUE(deployment_id, sequence) at the schema level', () => {
+    const deployments = createDeploymentRepository(db);
+    const d = deployments.create({ source_type: 'git', source_ref: 'r' });
+    db.prepare(
+      `INSERT INTO deployment_logs (id, deployment_id, stage, message, timestamp, sequence)
+       VALUES (?, ?, 'system', 'one', ?, 1)`,
+    ).run('log-a', d.id, new Date().toISOString());
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO deployment_logs (id, deployment_id, stage, message, timestamp, sequence)
+           VALUES (?, ?, 'system', 'two', ?, 1)`,
+        )
+        .run('log-b', d.id, new Date().toISOString()),
+    ).toThrow(/UNIQUE/);
   });
 });

@@ -17,6 +17,8 @@ type DeploymentRow = {
   status: string;
   image_tag: string | null;
   container_id: string | null;
+  container_name: string | null;
+  internal_port: number | null;
   route_path: string | null;
   live_url: string | null;
   created_at: string;
@@ -43,6 +45,8 @@ function rowToDeployment(row: DeploymentRow): Deployment {
   };
   if (row.image_tag !== null) d.image_tag = row.image_tag;
   if (row.container_id !== null) d.container_id = row.container_id;
+  if (row.container_name !== null) d.container_name = row.container_name;
+  if (row.internal_port !== null) d.internal_port = row.internal_port;
   if (row.route_path !== null) d.route_path = row.route_path;
   if (row.live_url !== null) d.live_url = row.live_url;
   return d;
@@ -59,13 +63,13 @@ function rowToLogEvent(row: DeploymentLogRow): DeploymentLogEvent {
   };
 }
 
-// Deployment lifecycle: pending -> building -> deploying -> live.
-// Any non-terminal state may transition to failed or cancelled. live/failed/cancelled are terminal.
+// Deployment lifecycle: pending -> building -> deploying -> running.
+// Any non-terminal state may transition to failed or cancelled. running/failed/cancelled are terminal.
 const ALLOWED_TRANSITIONS: Record<DeploymentStatus, DeploymentStatus[]> = {
   pending: ['building', 'failed', 'cancelled'],
   building: ['deploying', 'failed', 'cancelled'],
-  deploying: ['live', 'failed', 'cancelled'],
-  live: [],
+  deploying: ['running', 'failed', 'cancelled'],
+  running: [],
   failed: [],
   cancelled: [],
 };
@@ -99,6 +103,8 @@ export interface CreateDeploymentInput {
 export interface UpdateDeploymentInput {
   image_tag?: string;
   container_id?: string;
+  container_name?: string;
+  internal_port?: number;
   route_path?: string;
   live_url?: string;
 }
@@ -144,6 +150,17 @@ export function createDeploymentRepository(db: Database.Database) {
            RETURNING *`,
         )
         .get(new Date().toISOString()) as DeploymentRow | undefined;
+      return row ? rowToDeployment(row) : null;
+    },
+
+    claimById(id: string): Deployment | null {
+      const row = db
+        .prepare(
+          `UPDATE deployments SET status = 'building', updated_at = ?
+           WHERE id = ? AND status = 'pending'
+           RETURNING *`,
+        )
+        .get(new Date().toISOString(), id) as DeploymentRow | undefined;
       return row ? rowToDeployment(row) : null;
     },
 
@@ -198,7 +215,7 @@ export function createDeploymentRepository(db: Database.Database) {
       if (entries.length === 0) return current;
       const now = new Date().toISOString();
       const setClause = entries.map(([k]) => `${k} = ?`).join(', ');
-      const values = entries.map(([, v]) => v as string);
+      const values = entries.map(([, v]) => v as string | number);
       db.prepare(
         `UPDATE deployments SET ${setClause}, updated_at = ? WHERE id = ?`,
       ).run(...values, now, id);
@@ -208,6 +225,23 @@ export function createDeploymentRepository(db: Database.Database) {
 }
 
 export function createLogRepository(db: Database.Database) {
+  const selectNextSeq = db.prepare(
+    `SELECT COALESCE(MAX(sequence), 0) + 1 AS next FROM deployment_logs WHERE deployment_id = ?`,
+  );
+  const insertLog = db.prepare(
+    `INSERT INTO deployment_logs (id, deployment_id, stage, message, timestamp, sequence)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  // Atomic MAX+INSERT so concurrent appends can't produce duplicate sequences.
+  // The UNIQUE(deployment_id, sequence) constraint is the final safety net.
+  const appendTxn = db.transaction(
+    (deployment_id: string, stage: LogStage, message: string, id: string, timestamp: string): number => {
+      const { next } = selectNextSeq.get(deployment_id) as { next: number };
+      insertLog.run(id, deployment_id, stage, message, timestamp, next);
+      return next;
+    },
+  );
+
   return {
     append(input: {
       deployment_id: string;
@@ -216,17 +250,7 @@ export function createLogRepository(db: Database.Database) {
     }): DeploymentLogEvent {
       const id = nanoid();
       const timestamp = new Date().toISOString();
-      // MAX(sequence) + 1 scoped per deployment; COALESCE handles the empty case (gives 1).
-      const seqRow = db
-        .prepare(
-          `SELECT COALESCE(MAX(sequence), 0) + 1 AS next FROM deployment_logs WHERE deployment_id = ?`,
-        )
-        .get(input.deployment_id) as { next: number };
-      const sequence = seqRow.next;
-      db.prepare(
-        `INSERT INTO deployment_logs (id, deployment_id, stage, message, timestamp, sequence)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run(id, input.deployment_id, input.stage, input.message, timestamp, sequence);
+      const sequence = appendTxn(input.deployment_id, input.stage, input.message, id, timestamp);
       return {
         id,
         deployment_id: input.deployment_id,

@@ -21,6 +21,9 @@ export function createPathRouteAssigner(deps: PathRouteAssignerDeps = {}): Route
   const baseUrl = (deps.publicBaseUrl ?? process.env['PUBLIC_BASE_URL'] ?? 'http://localhost:8080').replace(/\/+$/, '');
   return {
     assign({ deployment }) {
+      if (!deployment.container_name || !deployment.internal_port) {
+        throw new Error('route assignment requires container_name and internal_port');
+      }
       const route_path = `/d/${deployment.id}`;
       const live_url = `${baseUrl}${route_path}`;
       return { route_path, live_url };

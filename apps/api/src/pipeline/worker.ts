@@ -1,7 +1,7 @@
 import path from 'node:path';
-import type { DeploymentSourceType } from '@updraft/shared-types';
+import type { DeploymentSourceType, LogStage } from '@updraft/shared-types';
 import type { DeploymentRepository, LogRepository } from '../db/repository.js';
-import { createStageLogger } from './logger.js';
+import { createStageLogger, type StageLogger } from './logger.js';
 import { selectAcquirer, type SourceAcquirer } from './sources.js';
 import { createRailpackBuilder, type Builder } from './build.js';
 import { createDockerRunner, type Runner } from './runner.js';
@@ -19,6 +19,22 @@ export interface PipelineDeps {
   workspaceRoot?: string;
 }
 
+class StageError extends Error {
+  constructor(public readonly stage: LogStage, message: string, public readonly cause?: unknown) {
+    super(message);
+    this.name = 'StageError';
+  }
+}
+
+async function runStage<T>(stage: LogStage, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new StageError(stage, message, err);
+  }
+}
+
 export async function runPipeline(deploymentId: string, deps: PipelineDeps): Promise<void> {
   const { deployments, logs } = deps;
   const broadcast = deps.publish ?? publish;
@@ -28,7 +44,9 @@ export async function runPipeline(deploymentId: string, deps: PipelineDeps): Pro
   const runner = deps.runner ?? createDockerRunner();
   const routeAssigner = deps.routeAssigner ?? createPathRouteAssigner();
 
-  const sysLogger = createStageLogger(deploymentId, 'system', { logs, deployments, publish: broadcast });
+  const loggerFor = (stage: LogStage): StageLogger =>
+    createStageLogger(deploymentId, stage, { logs, deployments, publish: broadcast });
+  const sysLogger = loggerFor('system');
 
   try {
     const deployment = deployments.getById(deploymentId);
@@ -37,46 +55,46 @@ export async function runPipeline(deploymentId: string, deps: PipelineDeps): Pro
       return;
     }
 
-    await sysLogger.status('building');
+    if (deployment.status === 'pending') {
+      await sysLogger.status('building');
+    }
 
-    const acquireLogger = createStageLogger(deploymentId, 'system', { logs, deployments, publish: broadcast });
     const workspaceDir = path.join(workspaceRoot, deploymentId);
-    const { workspacePath } = await acquirerFor(deployment.source_type).acquire({
-      deployment,
-      workspaceDir,
-      logger: acquireLogger,
-    });
+    const { workspacePath } = await runStage('system', () =>
+      acquirerFor(deployment.source_type).acquire({
+        deployment,
+        workspaceDir,
+        logger: loggerFor('system'),
+      }),
+    );
 
-    const buildLogger = createStageLogger(deploymentId, 'build', { logs, deployments, publish: broadcast });
-    const { image_tag } = await builder.build({
-      deployment,
-      workspacePath,
-      logger: buildLogger,
-    });
-
+    const { image_tag } = await runStage('build', () =>
+      builder.build({ deployment, workspacePath, logger: loggerFor('build') }),
+    );
     deployments.updateFields(deploymentId, { image_tag });
     await sysLogger.log(`Build complete: ${image_tag}`);
 
     await sysLogger.status('deploying');
-    const deployLogger = createStageLogger(deploymentId, 'deploy', { logs, deployments, publish: broadcast });
     const withImage = deployments.getById(deploymentId)!;
-    const { container_id } = await runner.run({
-      deployment: withImage,
-      imageTag: image_tag,
-      logger: deployLogger,
-    });
-    deployments.updateFields(deploymentId, { container_id });
+    const { container_id, container_name, internal_port } = await runStage('deploy', () =>
+      runner.run({ deployment: withImage, imageTag: image_tag, logger: loggerFor('deploy') }),
+    );
+    deployments.updateFields(deploymentId, { container_id, container_name, internal_port });
     await sysLogger.log(`Container started: ${container_id}`);
 
-    const { route_path, live_url } = routeAssigner.assign({ deployment: withImage });
+    const routedDeployment = deployments.getById(deploymentId)!;
+    const { route_path, live_url } = await runStage('system', async () =>
+      routeAssigner.assign({ deployment: routedDeployment }),
+    );
     deployments.updateFields(deploymentId, { route_path, live_url });
     await sysLogger.log(`Route assigned: ${live_url}`);
 
-    await sysLogger.status('live');
+    await sysLogger.status('running');
   } catch (err) {
+    const stage: LogStage = err instanceof StageError ? err.stage : 'system';
     const message = err instanceof Error ? err.message : String(err);
     try {
-      await sysLogger.log(`Pipeline failed: ${message}`);
+      await loggerFor(stage).log(`${stage} stage failed: ${message}`);
       await sysLogger.status('failed');
     } catch (innerErr) {
       console.error(`pipeline: failed to record failure for ${deploymentId}:`, innerErr);

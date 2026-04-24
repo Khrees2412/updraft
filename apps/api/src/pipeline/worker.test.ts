@@ -82,7 +82,7 @@ describe('runPipeline', () => {
     db = freshDb();
   });
 
-  it('runs happy path through live: persists image, container, route, and live_url', async () => {
+  it('runs happy path through running: persists runtime metadata, route, and live_url', async () => {
     const deployments = createDeploymentRepository(db);
     const logs = createLogRepository(db);
     const messages: SSEMessage[] = [];
@@ -101,9 +101,11 @@ describe('runPipeline', () => {
     });
 
     const after = deployments.getById(d.id)!;
-    expect(after.status).toBe('live');
+    expect(after.status).toBe('running');
     expect(after.image_tag).toBe('dep-x:42');
     expect(after.container_id).toBe('abcdef123456');
+    expect(after.container_name).toBe('dep-x');
+    expect(after.internal_port).toBe(3000);
     expect(after.route_path).toBe(`/d/${d.id}`);
     expect(after.live_url).toBe(`http://test/d/${d.id}`);
 
@@ -122,11 +124,11 @@ describe('runPipeline', () => {
 
     const statusEvents = messages.filter((m) => m.type === 'status');
     expect(statusEvents.map((m) => m.type === 'status' ? m.data.status : '')).toEqual(
-      ['building', 'deploying', 'live'],
+      ['building', 'deploying', 'running'],
     );
   });
 
-  it('marks deployment failed and emits status when source acquisition throws', async () => {
+  it('marks deployment failed and emits final system-stage error log when source acquisition throws', async () => {
     const deployments = createDeploymentRepository(db);
     const logs = createLogRepository(db);
     const d = deployments.create({ source_type: 'git', source_ref: 'https://example.com/r.git' });
@@ -142,11 +144,13 @@ describe('runPipeline', () => {
 
     const after = deployments.getById(d.id)!;
     expect(after.status).toBe('failed');
-    const messages = logs.listByDeployment(d.id).map((e) => e.message);
-    expect(messages.some((m) => m.includes('Pipeline failed'))).toBe(true);
+    const events = logs.listByDeployment(d.id);
+    const terminal = events[events.length - 1]!;
+    expect(terminal.stage).toBe('system');
+    expect(terminal.message).toBe('system stage failed: boom');
   });
 
-  it('marks deployment failed when the builder throws', async () => {
+  it('marks deployment failed with build-stage error log when the builder throws', async () => {
     const deployments = createDeploymentRepository(db);
     const logs = createLogRepository(db);
     const d = deployments.create({ source_type: 'git', source_ref: 'https://example.com/r.git' });
@@ -161,9 +165,13 @@ describe('runPipeline', () => {
     });
 
     expect(deployments.getById(d.id)!.status).toBe('failed');
+    const events = logs.listByDeployment(d.id);
+    const terminal = events[events.length - 1]!;
+    expect(terminal.stage).toBe('build');
+    expect(terminal.message).toBe('build stage failed: build broke');
   });
 
-  it('marks deployment failed when the runner throws', async () => {
+  it('marks deployment failed with deploy-stage error log when the runner throws', async () => {
     const deployments = createDeploymentRepository(db);
     const logs = createLogRepository(db);
     const d = deployments.create({ source_type: 'git', source_ref: 'https://example.com/r.git' });
@@ -180,6 +188,10 @@ describe('runPipeline', () => {
     const after = deployments.getById(d.id)!;
     expect(after.status).toBe('failed');
     expect(after.image_tag).toBe('dep-x:1');
+    const events = logs.listByDeployment(d.id);
+    const terminal = events[events.length - 1]!;
+    expect(terminal.stage).toBe('deploy');
+    expect(terminal.message).toBe('deploy stage failed: run broke');
   });
 
   it('does nothing if the deployment does not exist', async () => {
@@ -195,5 +207,23 @@ describe('runPipeline', () => {
         routeAssigner: fakeRouteAssigner(),
       }),
     ).resolves.toBeUndefined();
+  });
+
+  it('does not re-transition a deployment already claimed into building', async () => {
+    const deployments = createDeploymentRepository(db);
+    const logs = createLogRepository(db);
+    const d = deployments.create({ source_type: 'git', source_ref: 'https://example.com/r.git' });
+    deployments.claimById(d.id);
+
+    await runPipeline(d.id, {
+      deployments,
+      logs,
+      acquirer: () => fakeAcquirer(),
+      builder: fakeBuilder(),
+      runner: fakeRunner(),
+      routeAssigner: fakeRouteAssigner(),
+    });
+
+    expect(deployments.getById(d.id)!.status).toBe('running');
   });
 });

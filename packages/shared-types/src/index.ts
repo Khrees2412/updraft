@@ -1,7 +1,7 @@
 // Deployment status state machine
-export type DeploymentStatus = 'pending' | 'building' | 'deploying' | 'live' | 'failed' | 'cancelled';
+export type DeploymentStatus = 'pending' | 'building' | 'deploying' | 'running' | 'failed' | 'cancelled';
 
-export const TERMINAL_DEPLOYMENT_STATUSES = ['live', 'failed', 'cancelled'] as const satisfies readonly DeploymentStatus[];
+export const TERMINAL_DEPLOYMENT_STATUSES = ['running', 'failed', 'cancelled'] as const satisfies readonly DeploymentStatus[];
 
 export function isTerminalDeploymentStatus(status: DeploymentStatus): boolean {
   return (TERMINAL_DEPLOYMENT_STATUSES as readonly DeploymentStatus[]).includes(status);
@@ -21,6 +21,8 @@ export interface Deployment {
   status: DeploymentStatus;
   image_tag?: string;
   container_id?: string;
+  container_name?: string;
+  internal_port?: number;
   route_path?: string;
   live_url?: string;
   created_at: string; // ISO 8601
@@ -40,7 +42,6 @@ export interface DeploymentLogEvent {
 // API Request/Response types
 export interface CreateDeploymentRequest {
   git_url?: string;
-  archive_ref?: string;
 }
 
 export interface CreateDeploymentResponse {

@@ -6,7 +6,7 @@ import { createDeploymentSchema } from '../schemas.js';
 import { handleError, BadRequestError, ConflictError } from '../lib/errors.js';
 import { subscribe } from '../sse/broker.js';
 import { getPipelineQueue } from '../pipeline/index.js';
-import { isTerminalDeploymentStatus } from '@updraft/shared-types';
+import { isTerminalDeploymentStatus, type SSEMessage } from '@updraft/shared-types';
 import { customAlphabet } from 'nanoid';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -48,8 +48,8 @@ export function createDeploymentsRouter(db: Database.Database, options: Deployme
       } else {
         const body = await c.req.json().catch(() => { throw new BadRequestError('Request body must be valid JSON'); });
         const parsed = createDeploymentSchema.parse(body);
-        source_type = parsed.git_url ? 'git' : 'upload';
-        source_ref = (parsed.git_url ?? parsed.archive_ref)!;
+        source_type = 'git';
+        source_ref = parsed.git_url!;
       }
 
       const deployment = deployments.create({ source_type, source_ref });
@@ -105,38 +105,91 @@ export function createDeploymentsRouter(db: Database.Database, options: Deployme
       return c.json({ success: false, message: `Deployment not found: ${deploymentId}` }, 404);
     }
 
+    // Resume from Last-Event-ID (standard SSE reconnect header) or ?afterSequence= query.
+    const lastEventId = c.req.header('last-event-id');
+    const afterQuery = c.req.query('afterSequence');
+    const parsed = Number(lastEventId ?? afterQuery ?? 0);
+    const afterSequence = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+
     return streamSSE(c, async (stream) => {
-      // Replay historical logs first
-      const history = logs.listByDeployment(deploymentId);
-      for (const event of history) {
-        await stream.writeSSE({ event: 'log', data: JSON.stringify(event) });
-      }
+      let lastSequence = afterSequence;
+      let writes = Promise.resolve();
+      let settled = false;
+      let resolver: (() => void) | null = null;
 
-      if (isTerminalDeploymentStatus(deployment.status)) {
-        await stream.writeSSE({ event: 'done', data: JSON.stringify({ status: deployment.status }) });
-        return;
-      }
+      const finish = async (status: string) => {
+        if (settled) return;
+        settled = true;
+        await stream.writeSSE({ event: 'done', data: JSON.stringify({ status }) });
+        resolver?.();
+      };
 
-      // Subscribe to live events
-      await new Promise<void>((resolve) => {
-        const unsubscribe = subscribe(deploymentId, async (msg) => {
+      const queued: SSEMessage[] = [];
+      let replaying = true;
+      const unsubscribe = subscribe(deploymentId, (msg) => {
+        if (replaying) {
+          queued.push(msg);
+          return;
+        }
+        writes = writes.then(async () => {
           if (msg.type === 'log') {
-            await stream.writeSSE({ event: 'log', data: JSON.stringify(msg.data) });
-          } else if (msg.type === 'status') {
-            await stream.writeSSE({ event: 'status', data: JSON.stringify(msg.data) });
-            if (isTerminalDeploymentStatus(msg.data.status)) {
-              await stream.writeSSE({ event: 'done', data: JSON.stringify({ status: msg.data.status }) });
-              unsubscribe();
-              resolve();
-            }
+            if (msg.data.sequence <= lastSequence) return;
+            lastSequence = msg.data.sequence;
+            await stream.writeSSE({ id: String(msg.data.sequence), event: 'log', data: JSON.stringify(msg.data) });
+            return;
+          }
+          await stream.writeSSE({ event: 'status', data: JSON.stringify(msg.data) });
+          if (isTerminalDeploymentStatus(msg.data.status)) {
+            await finish(msg.data.status);
           }
         });
-
-        stream.onAbort(() => {
-          unsubscribe();
-          resolve();
-        });
       });
+
+      const flushQueued = async () => {
+        replaying = false;
+        for (const msg of queued) {
+          await writes;
+          if (msg.type === 'log') {
+            if (msg.data.sequence <= lastSequence) continue;
+            lastSequence = msg.data.sequence;
+            await stream.writeSSE({ id: String(msg.data.sequence), event: 'log', data: JSON.stringify(msg.data) });
+            continue;
+          }
+          await stream.writeSSE({ event: 'status', data: JSON.stringify(msg.data) });
+          if (isTerminalDeploymentStatus(msg.data.status)) {
+            await finish(msg.data.status);
+            break;
+          }
+        }
+      };
+
+      stream.onAbort(() => {
+        unsubscribe();
+        resolver?.();
+      });
+
+      try {
+        const history = logs.listByDeployment(deploymentId, { afterSequence });
+        for (const event of history) {
+          await stream.writeSSE({ id: String(event.sequence), event: 'log', data: JSON.stringify(event) });
+          lastSequence = event.sequence;
+        }
+
+        await flushQueued();
+        if (settled) return;
+
+        const current = deployments.getById(deploymentId);
+        if (current && isTerminalDeploymentStatus(current.status)) {
+          await finish(current.status);
+          return;
+        }
+
+        await new Promise<void>((resolve) => {
+          resolver = resolve;
+        });
+      } finally {
+        unsubscribe();
+      }
     });
   });
 

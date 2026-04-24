@@ -24,12 +24,16 @@ export interface DockerRunnerDeps {
   network?: string;
   internalPort?: number;
   command?: string;
+  healthCheckIntervalMs?: number;
+  healthCheckTimeoutMs?: number;
 }
 
 export function createDockerRunner(deps: DockerRunnerDeps = {}): Runner {
   const command = deps.command ?? 'docker';
   const network = deps.network ?? process.env['DEPLOYMENT_NETWORK'] ?? 'updraft_deployments';
   const internalPort = deps.internalPort ?? Number(process.env['APP_INTERNAL_PORT'] ?? 3000);
+  const healthCheckIntervalMs = deps.healthCheckIntervalMs ?? 1000;
+  const healthCheckTimeoutMs = deps.healthCheckTimeoutMs ?? 30000;
 
   return {
     async run({ deployment, imageTag, logger }) {
@@ -73,7 +77,49 @@ export function createDockerRunner(deps: DockerRunnerDeps = {}): Runner {
         throw new DeployFailedError('docker run did not return a container id');
       }
 
-      return { container_id, container_name: containerName, internal_port: internalPort };
+      await logger.log(`Waiting for container ${containerName} to report running/healthy`);
+      const deadline = Date.now() + healthCheckTimeoutMs;
+
+      while (Date.now() <= deadline) {
+        const inspectLines: string[] = [];
+        const inspect = await runStreaming(
+          command,
+          ['inspect', '--format', '{{json .State}}', containerName],
+          async (line) => {
+            inspectLines.push(line);
+            await logger.log(line);
+          },
+          deps.spawn ? { spawn: deps.spawn } : {},
+        );
+
+        if (inspect.exitCode !== 0) {
+          throw new DeployFailedError(`docker inspect exited with code ${inspect.exitCode}`);
+        }
+
+        const rawState = inspectLines.find((line) => line.trim().startsWith('{'));
+        if (!rawState) {
+          throw new DeployFailedError('docker inspect did not return container state');
+        }
+
+        const state = JSON.parse(rawState) as {
+          Status?: string;
+          Health?: { Status?: string };
+        };
+        const status = state.Status ?? 'unknown';
+        const health = state.Health?.Status;
+
+        if (status === 'running' && (!health || health === 'healthy')) {
+          return { container_id, container_name: containerName, internal_port: internalPort };
+        }
+
+        if (status === 'exited' || status === 'dead' || health === 'unhealthy') {
+          throw new DeployFailedError(`container failed health check (status=${status}, health=${health ?? 'none'})`);
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, healthCheckIntervalMs));
+      }
+
+      throw new DeployFailedError(`container did not become healthy within ${healthCheckTimeoutMs}ms`);
     },
   };
 }

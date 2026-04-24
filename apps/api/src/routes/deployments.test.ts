@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { runMigrations } from '../db/migrate.js';
+import { createDeploymentRepository, createLogRepository } from '../db/repository.js';
 import { createDeploymentsRouter } from './deployments.js';
 
 function freshDb(): Database.Database {
@@ -36,7 +37,7 @@ describe('deployments router', () => {
     expect(json.success).toBe(false);
   });
 
-  it('rejects body missing both git_url and archive_ref with 400', async () => {
+  it('rejects body missing git_url with 400', async () => {
     const router = createDeploymentsRouter(db, { enqueue: () => {} });
     const res = await router.request('/', {
       method: 'POST',
@@ -49,6 +50,12 @@ describe('deployments router', () => {
   it('rejects invalid git_url with 400', async () => {
     const router = createDeploymentsRouter(db, { enqueue: () => {} });
     const res = await router.request(jsonRequest('/', { git_url: 'not a url' }));
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects JSON upload references and requires multipart uploads', async () => {
+    const router = createDeploymentsRouter(db, { enqueue: () => {} });
+    const res = await router.request(jsonRequest('/', { archive_ref: 'artifact.tar.gz' }));
     expect(res.status).toBe(400);
   });
 
@@ -107,5 +114,85 @@ describe('deployments router', () => {
     const router = createDeploymentsRouter(db, { enqueue: () => {} });
     const res = await router.request('/does-not-exist/cancel', { method: 'POST' });
     expect(res.status).toBe(404);
+  });
+
+  it('replays full log history with SSE ids and terminates on terminal status', async () => {
+    const router = createDeploymentsRouter(db, { enqueue: () => {} });
+    const deployments = createDeploymentRepository(db);
+    const logs = createLogRepository(db);
+    const d = deployments.create({ source_type: 'git', source_ref: 'https://example.com/r.git' });
+    logs.append({ deployment_id: d.id, stage: 'build', message: 'a' });
+    logs.append({ deployment_id: d.id, stage: 'build', message: 'b' });
+    logs.append({ deployment_id: d.id, stage: 'deploy', message: 'c' });
+    deployments.updateStatus(d.id, 'building');
+    deployments.updateStatus(d.id, 'failed');
+
+    const res = await router.request(`/${d.id}/logs/stream`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    const body = await res.text();
+
+    expect(body).toContain('id: 1');
+    expect(body).toContain('id: 2');
+    expect(body).toContain('id: 3');
+    expect(body).toContain('event: done');
+    const logCount = (body.match(/event: log/g) ?? []).length;
+    expect(logCount).toBe(3);
+  });
+
+  it('resumes from Last-Event-ID and only replays logs past the cursor', async () => {
+    const router = createDeploymentsRouter(db, { enqueue: () => {} });
+    const deployments = createDeploymentRepository(db);
+    const logs = createLogRepository(db);
+    const d = deployments.create({ source_type: 'git', source_ref: 'https://example.com/r.git' });
+    logs.append({ deployment_id: d.id, stage: 'build', message: 'a' });
+    logs.append({ deployment_id: d.id, stage: 'build', message: 'b' });
+    logs.append({ deployment_id: d.id, stage: 'deploy', message: 'c' });
+    deployments.updateStatus(d.id, 'building');
+    deployments.updateStatus(d.id, 'failed');
+
+    const res = await router.request(`/${d.id}/logs/stream`, {
+      method: 'GET',
+      headers: { 'last-event-id': '2' },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.text();
+
+    expect(body).not.toContain('"message":"a"');
+    expect(body).not.toContain('"message":"b"');
+    expect(body).toContain('"message":"c"');
+    expect(body).toContain('id: 3');
+    const logCount = (body.match(/event: log/g) ?? []).length;
+    expect(logCount).toBe(1);
+  });
+
+  it('accepts afterSequence query param as a fallback for resume', async () => {
+    const router = createDeploymentsRouter(db, { enqueue: () => {} });
+    const deployments = createDeploymentRepository(db);
+    const logs = createLogRepository(db);
+    const d = deployments.create({ source_type: 'git', source_ref: 'https://example.com/r.git' });
+    logs.append({ deployment_id: d.id, stage: 'build', message: 'a' });
+    logs.append({ deployment_id: d.id, stage: 'build', message: 'b' });
+    deployments.updateStatus(d.id, 'building');
+    deployments.updateStatus(d.id, 'failed');
+
+    const res = await router.request(`/${d.id}/logs/stream?afterSequence=1`, { method: 'GET' });
+    const body = await res.text();
+    expect(body).not.toContain('"message":"a"');
+    expect(body).toContain('"message":"b"');
+  });
+
+  it('emits done when a deployment becomes terminal during stream setup', async () => {
+    const router = createDeploymentsRouter(db, { enqueue: () => {} });
+    const deployments = createDeploymentRepository(db);
+    const logs = createLogRepository(db);
+    const d = deployments.create({ source_type: 'git', source_ref: 'https://example.com/r.git' });
+    logs.append({ deployment_id: d.id, stage: 'build', message: 'a' });
+    deployments.updateStatus(d.id, 'building');
+    deployments.updateStatus(d.id, 'failed');
+
+    const res = await router.request(`/${d.id}/logs/stream`, { method: 'GET' });
+    const body = await res.text();
+    expect(body).toContain('event: done');
+    expect(body).toContain('"status":"failed"');
   });
 });
