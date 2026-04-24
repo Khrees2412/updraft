@@ -23,6 +23,13 @@ export class BuildFailedError extends Error {
   }
 }
 
+export class DeployFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DeployFailedError';
+  }
+}
+
 export class ConflictError extends Error {
   constructor(message: string) {
     super(message);

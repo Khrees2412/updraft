@@ -5,8 +5,10 @@ import { createDeploymentRepository, createLogRepository } from '../db/repositor
 import { runPipeline } from './worker.js';
 import type { SourceAcquirer } from './sources.js';
 import type { Builder } from './build.js';
+import type { Runner } from './runner.js';
+import type { RouteAssigner } from './routing.js';
 import type { SSEMessage } from '@updraft/shared-types';
-import { BuildFailedError, SourceAcquisitionError } from '../lib/errors.js';
+import { BuildFailedError, DeployFailedError, SourceAcquisitionError } from '../lib/errors.js';
 
 function freshDb(): Database.Database {
   const db = new Database(':memory:');
@@ -49,13 +51,38 @@ function failingBuilder(): Builder {
   };
 }
 
+function fakeRunner(container_id = 'c0ffee0000'): Runner {
+  return {
+    async run({ logger }) {
+      await logger.log('container up');
+      return { container_id, container_name: 'dep-x', internal_port: 3000 };
+    },
+  };
+}
+
+function failingRunner(): Runner {
+  return {
+    async run() {
+      throw new DeployFailedError('run broke');
+    },
+  };
+}
+
+function fakeRouteAssigner(): RouteAssigner {
+  return {
+    assign({ deployment }) {
+      return { route_path: `/d/${deployment.id}`, live_url: `http://test/d/${deployment.id}` };
+    },
+  };
+}
+
 describe('runPipeline', () => {
   let db: Database.Database;
   beforeEach(() => {
     db = freshDb();
   });
 
-  it('runs the happy path: status -> building, persists logs and image_tag', async () => {
+  it('runs happy path through live: persists image, container, route, and live_url', async () => {
     const deployments = createDeploymentRepository(db);
     const logs = createLogRepository(db);
     const messages: SSEMessage[] = [];
@@ -69,21 +96,34 @@ describe('runPipeline', () => {
       },
       acquirer: () => fakeAcquirer(),
       builder: fakeBuilder('dep-x:42'),
+      runner: fakeRunner('abcdef123456'),
+      routeAssigner: fakeRouteAssigner(),
     });
 
     const after = deployments.getById(d.id)!;
-    expect(after.status).toBe('building');
+    expect(after.status).toBe('live');
     expect(after.image_tag).toBe('dep-x:42');
+    expect(after.container_id).toBe('abcdef123456');
+    expect(after.route_path).toBe(`/d/${d.id}`);
+    expect(after.live_url).toBe(`http://test/d/${d.id}`);
 
     const events = logs.listByDeployment(d.id);
     expect(events.map((e) => e.message)).toEqual(
-      expect.arrayContaining(['cloned', 'built', 'Build complete: dep-x:42']),
+      expect.arrayContaining([
+        'cloned',
+        'built',
+        'Build complete: dep-x:42',
+        'container up',
+        'Container started: abcdef123456',
+        `Route assigned: http://test/d/${d.id}`,
+      ]),
     );
     expect(events.map((e) => e.sequence)).toEqual([...events.map((e) => e.sequence)].sort((a, b) => a - b));
 
     const statusEvents = messages.filter((m) => m.type === 'status');
-    expect(statusEvents[0]).toEqual({ type: 'status', data: { deployment_id: d.id, status: 'building' } });
-    expect(messages.filter((m) => m.type === 'log').length).toBeGreaterThanOrEqual(3);
+    expect(statusEvents.map((m) => m.type === 'status' ? m.data.status : '')).toEqual(
+      ['building', 'deploying', 'live'],
+    );
   });
 
   it('marks deployment failed and emits status when source acquisition throws', async () => {
@@ -96,6 +136,8 @@ describe('runPipeline', () => {
       logs,
       acquirer: () => failingAcquirer(),
       builder: fakeBuilder(),
+      runner: fakeRunner(),
+      routeAssigner: fakeRouteAssigner(),
     });
 
     const after = deployments.getById(d.id)!;
@@ -114,9 +156,30 @@ describe('runPipeline', () => {
       logs,
       acquirer: () => fakeAcquirer(),
       builder: failingBuilder(),
+      runner: fakeRunner(),
+      routeAssigner: fakeRouteAssigner(),
     });
 
     expect(deployments.getById(d.id)!.status).toBe('failed');
+  });
+
+  it('marks deployment failed when the runner throws', async () => {
+    const deployments = createDeploymentRepository(db);
+    const logs = createLogRepository(db);
+    const d = deployments.create({ source_type: 'git', source_ref: 'https://example.com/r.git' });
+
+    await runPipeline(d.id, {
+      deployments,
+      logs,
+      acquirer: () => fakeAcquirer(),
+      builder: fakeBuilder(),
+      runner: failingRunner(),
+      routeAssigner: fakeRouteAssigner(),
+    });
+
+    const after = deployments.getById(d.id)!;
+    expect(after.status).toBe('failed');
+    expect(after.image_tag).toBe('dep-x:1');
   });
 
   it('does nothing if the deployment does not exist', async () => {
@@ -128,6 +191,8 @@ describe('runPipeline', () => {
         logs,
         acquirer: () => fakeAcquirer(),
         builder: fakeBuilder(),
+        runner: fakeRunner(),
+        routeAssigner: fakeRouteAssigner(),
       }),
     ).resolves.toBeUndefined();
   });

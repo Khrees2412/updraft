@@ -4,6 +4,8 @@ import type { DeploymentRepository, LogRepository } from '../db/repository.js';
 import { createStageLogger } from './logger.js';
 import { selectAcquirer, type SourceAcquirer } from './sources.js';
 import { createRailpackBuilder, type Builder } from './build.js';
+import { createDockerRunner, type Runner } from './runner.js';
+import { createPathRouteAssigner, type RouteAssigner } from './routing.js';
 import { publish } from '../sse/broker.js';
 
 export interface PipelineDeps {
@@ -12,6 +14,8 @@ export interface PipelineDeps {
   publish?: typeof publish;
   acquirer?: (sourceType: DeploymentSourceType) => SourceAcquirer;
   builder?: Builder;
+  runner?: Runner;
+  routeAssigner?: RouteAssigner;
   workspaceRoot?: string;
 }
 
@@ -21,6 +25,8 @@ export async function runPipeline(deploymentId: string, deps: PipelineDeps): Pro
   const workspaceRoot = deps.workspaceRoot ?? path.join(process.cwd(), 'data', 'workspaces');
   const acquirerFor = deps.acquirer ?? ((t) => selectAcquirer(t));
   const builder = deps.builder ?? createRailpackBuilder();
+  const runner = deps.runner ?? createDockerRunner();
+  const routeAssigner = deps.routeAssigner ?? createPathRouteAssigner();
 
   const sysLogger = createStageLogger(deploymentId, 'system', { logs, deployments, publish: broadcast });
 
@@ -50,7 +56,23 @@ export async function runPipeline(deploymentId: string, deps: PipelineDeps): Pro
 
     deployments.updateFields(deploymentId, { image_tag });
     await sysLogger.log(`Build complete: ${image_tag}`);
-    // Stops at 'building' until C-04 (deploy) and C-05 (route) land.
+
+    await sysLogger.status('deploying');
+    const deployLogger = createStageLogger(deploymentId, 'deploy', { logs, deployments, publish: broadcast });
+    const withImage = deployments.getById(deploymentId)!;
+    const { container_id } = await runner.run({
+      deployment: withImage,
+      imageTag: image_tag,
+      logger: deployLogger,
+    });
+    deployments.updateFields(deploymentId, { container_id });
+    await sysLogger.log(`Container started: ${container_id}`);
+
+    const { route_path, live_url } = routeAssigner.assign({ deployment: withImage });
+    deployments.updateFields(deploymentId, { route_path, live_url });
+    await sysLogger.log(`Route assigned: ${live_url}`);
+
+    await sysLogger.status('live');
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     try {
