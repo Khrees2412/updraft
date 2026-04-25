@@ -78,6 +78,28 @@ describe('git acquirer', () => {
       }),
     ).rejects.toBeInstanceOf(SourceAcquisitionError);
   });
+
+  it('rejects localhost URLs', async () => {
+    const acquirer = createGitAcquirer({ spawn: fakeSpawn([], 0) });
+    await expect(
+      acquirer.acquire({
+        deployment: { ...baseDeployment, source_ref: 'http://localhost/repo.git' },
+        workspaceDir: path.join(tmp, 'd1'),
+        logger: loggerStub(),
+      }),
+    ).rejects.toBeInstanceOf(SourceAcquisitionError);
+  });
+
+  it('rejects non-http(s) protocols', async () => {
+    const acquirer = createGitAcquirer({ spawn: fakeSpawn([], 0) });
+    await expect(
+      acquirer.acquire({
+        deployment: { ...baseDeployment, source_ref: 'file:///etc/passwd' },
+        workspaceDir: path.join(tmp, 'd1'),
+        logger: loggerStub(),
+      }),
+    ).rejects.toBeInstanceOf(SourceAcquisitionError);
+  });
 });
 
 describe('upload acquirer', () => {

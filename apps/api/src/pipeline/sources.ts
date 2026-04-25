@@ -23,14 +23,33 @@ export interface GitAcquirerDeps {
   spawn?: SpawnOptions['spawn'];
 }
 
+function isValidGitUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const validProtocols = ['https:', 'http:', 'git+ssh:', 'ssh:'];
+    if (!validProtocols.includes(parsed.protocol)) {
+      return false;
+    }
+    if (parsed.host === 'localhost' || parsed.host === '127.0.0.1') {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function createGitAcquirer(deps: GitAcquirerDeps = {}): SourceAcquirer {
   return {
     async acquire({ deployment, workspaceDir, logger }) {
+      if (!isValidGitUrl(deployment.source_ref)) {
+        throw new SourceAcquisitionError(`Invalid git URL: ${deployment.source_ref}`);
+      }
       fs.mkdirSync(path.dirname(workspaceDir), { recursive: true });
       await logger.log(`Cloning ${deployment.source_ref}`);
       const result = await runStreaming(
         'git',
-        ['clone', '--depth', '1', deployment.source_ref, workspaceDir],
+        ['clone', '--depth', '1', '--', deployment.source_ref, workspaceDir],
         async (line) => {
           await logger.log(line);
         },

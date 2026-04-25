@@ -5,6 +5,8 @@
   "description": "Brimble Take-Home - One-page deployment pipeline platform",
   "scripts": {
     "dev": "pnpm --filter @updraft/api dev",
+    "dev:api": "pnpm --filter @updraft/api dev",
+    "dev:frontend": "pnpm --filter @updraft/frontend dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",

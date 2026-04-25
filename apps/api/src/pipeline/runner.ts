@@ -1,7 +1,7 @@
-import type { Deployment } from '@updraft/shared-types';
-import { runStreaming, type SpawnOptions } from './process.js';
+import Dockerode from 'dockerode';
 import { DeployFailedError } from '../lib/errors.js';
 import type { StageLogger } from './logger.js';
+import type { Deployment } from '@updraft/shared-types';
 
 export interface RunInput {
   deployment: Deployment;
@@ -20,16 +20,22 @@ export interface Runner {
 }
 
 export interface DockerRunnerDeps {
-  spawn?: SpawnOptions['spawn'];
+  docker?: Dockerode;
   network?: string;
   internalPort?: number;
-  command?: string;
   healthCheckIntervalMs?: number;
   healthCheckTimeoutMs?: number;
 }
 
+async function ensureNetwork(docker: Dockerode, name: string): Promise<void> {
+  const networks = await docker.listNetworks({ filters: { name: [name] } });
+  if (!networks.some((n) => n.Name === name)) {
+    await docker.createNetwork({ Name: name, Driver: 'bridge' });
+  }
+}
+
 export function createDockerRunner(deps: DockerRunnerDeps = {}): Runner {
-  const command = deps.command ?? 'docker';
+  const docker = deps.docker ?? new Dockerode();
   const network = deps.network ?? process.env['DEPLOYMENT_NETWORK'] ?? 'updraft_deployments';
   const internalPort = deps.internalPort ?? Number(process.env['APP_INTERNAL_PORT'] ?? 3000);
   const healthCheckIntervalMs = deps.healthCheckIntervalMs ?? 1000;
@@ -39,87 +45,63 @@ export function createDockerRunner(deps: DockerRunnerDeps = {}): Runner {
     async run({ deployment, imageTag, logger }) {
       const containerName = `dep-${deployment.id}`;
 
-      await logger.log(`Removing any prior container named ${containerName}`);
-      await runStreaming(
-        command,
-        ['rm', '-f', containerName],
-        async () => {},
-        deps.spawn ? { spawn: deps.spawn } : {},
-      );
+      await ensureNetwork(docker, network);
+
+      // Remove any prior container with the same name
+      try {
+        const prior = docker.getContainer(containerName);
+        await prior.remove({ force: true });
+        await logger.log(`Removed prior container ${containerName}`);
+      } catch (err: unknown) {
+        // 404 means it didn't exist — that's fine
+        if ((err as { statusCode?: number }).statusCode !== 404) throw err;
+      }
 
       await logger.log(`Starting container ${containerName} from ${imageTag} on network ${network}`);
-      const lines: string[] = [];
-      const result = await runStreaming(
-        command,
-        [
-          'run',
-          '-d',
-          '--name', containerName,
-          '--network', network,
-          '--env', `PORT=${internalPort}`,
-          '--label', `updraft.deployment=${deployment.id}`,
-          '--label', `updraft.port=${internalPort}`,
-          imageTag,
-        ],
-        async (line) => {
-          lines.push(line);
-          await logger.log(line);
+
+      const container = await docker.createContainer({
+        name: containerName,
+        Image: imageTag,
+        Env: [`PORT=${internalPort}`],
+        Labels: {
+          'updraft.deployment': deployment.id,
+          'updraft.port': String(internalPort),
         },
-        deps.spawn ? { spawn: deps.spawn } : {},
-      );
+        HostConfig: {
+          NetworkMode: network,
+        },
+      });
 
-      if (result.exitCode !== 0) {
-        throw new DeployFailedError(`docker run exited with code ${result.exitCode}`);
-      }
+      await container.start();
+      const info = await container.inspect();
+      const container_id = info.Id;
 
-      const container_id = lines.reverse().find((l) => /^[0-9a-f]{12,}$/i.test(l.trim()))?.trim();
-      if (!container_id) {
-        throw new DeployFailedError('docker run did not return a container id');
-      }
+      await logger.log(`Container started with ID ${container_id.slice(0, 12)}`);
 
-      await logger.log(`Waiting for container ${containerName} to report running/healthy`);
+      // Poll until running/healthy or terminal failure
       const deadline = Date.now() + healthCheckTimeoutMs;
-
       while (Date.now() <= deadline) {
-        const inspectLines: string[] = [];
-        const inspect = await runStreaming(
-          command,
-          ['inspect', '--format', '{{json .State}}', containerName],
-          async (line) => {
-            inspectLines.push(line);
-            await logger.log(line);
-          },
-          deps.spawn ? { spawn: deps.spawn } : {},
-        );
-
-        if (inspect.exitCode !== 0) {
-          throw new DeployFailedError(`docker inspect exited with code ${inspect.exitCode}`);
-        }
-
-        const rawState = inspectLines.find((line) => line.trim().startsWith('{'));
-        if (!rawState) {
-          throw new DeployFailedError('docker inspect did not return container state');
-        }
-
-        const state = JSON.parse(rawState) as {
-          Status?: string;
-          Health?: { Status?: string };
-        };
+        const state = (await container.inspect()).State;
         const status = state.Status ?? 'unknown';
-        const health = state.Health?.Status;
+        const health = (state as { Health?: { Status?: string } }).Health?.Status;
 
         if (status === 'running' && (!health || health === 'healthy')) {
+          await logger.log(`Container ${containerName} is running`);
           return { container_id, container_name: containerName, internal_port: internalPort };
         }
 
         if (status === 'exited' || status === 'dead' || health === 'unhealthy') {
-          throw new DeployFailedError(`container failed health check (status=${status}, health=${health ?? 'none'})`);
+          throw new DeployFailedError(
+            `Container failed health check (status=${status}, health=${health ?? 'none'})`,
+          );
         }
 
         await new Promise((resolve) => setTimeout(resolve, healthCheckIntervalMs));
       }
 
-      throw new DeployFailedError(`container did not become healthy within ${healthCheckTimeoutMs}ms`);
+      throw new DeployFailedError(
+        `Container did not become healthy within ${healthCheckTimeoutMs}ms`,
+      );
     },
   };
 }

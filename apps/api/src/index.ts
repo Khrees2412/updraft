@@ -4,9 +4,11 @@ import { getDb } from "./db/client.js";
 import { runMigrations } from "./db/migrate.js";
 import health from "./routes/health.js";
 import { createDeploymentsRouter } from "./routes/deployments.js";
+import { getPipelineQueue } from "./pipeline/index.js";
 
 const db = getDb();
 runMigrations(db);
+getPipelineQueue(db);
 
 const app = new Hono();
 
