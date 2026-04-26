@@ -7,7 +7,7 @@ A local deployment pipeline. Paste a Git URL or upload a tarball, and it builds 
 ```bash
 git clone <repo>
 cd updraft
-docker compose -f infra/compose/docker-compose.yml up --build
+docker compose up --build
 ```
 
 Open **http://localhost:8080**. No env vars required — sensible defaults are baked in.

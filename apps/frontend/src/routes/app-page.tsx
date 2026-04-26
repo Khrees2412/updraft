@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Deployment } from '@updraft/shared-types';
 import { createDeployment, listDeployments } from '../lib/api';
 import { LogViewer } from '../components/log-viewer';
+import { FolderPicker, type PickedFolder } from '../components/folder-picker';
+import { createTarBlob } from '../lib/tar';
 
 type SourceMode = 'git' | 'upload';
 
@@ -14,7 +16,7 @@ export function AppPage() {
   const queryClient = useQueryClient();
   const [mode, setMode] = useState<SourceMode>('git');
   const [gitUrl, setGitUrl] = useState('');
-  const [archive, setArchive] = useState<File | null>(null);
+  const [picked, setPicked] = useState<PickedFolder | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [selectedDeployment, setSelectedDeployment] = useState<Deployment | null>(null);
 
@@ -28,18 +30,21 @@ export function AppPage() {
     mutationFn: createDeployment,
     onSuccess: async () => {
       setGitUrl('');
-      setArchive(null);
+      setPicked(null);
       setFormError(null);
       await queryClient.invalidateQueries({ queryKey: ['deployments'] });
     },
   });
 
+  const [isPacking, setIsPacking] = useState(false);
+
   const submitLabel = useMemo(() => {
+    if (isPacking) return 'Packing...';
     if (createMutation.isPending) {
       return mode === 'git' ? 'Queueing repo...' : 'Uploading...';
     }
     return 'Deploy';
-  }, [createMutation.isPending, mode]);
+  }, [createMutation.isPending, isPacking, mode]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -56,14 +61,31 @@ export function AppPage() {
       return;
     }
 
-    if (!archive) {
-      setFormError('Select a file to upload');
+    if (!picked) {
+      setFormError('Pick a folder to upload');
+      return;
+    }
+    if (picked.result.kept.length === 0) {
+      setFormError('No files to upload after filtering');
       return;
     }
 
-    await createMutation.mutateAsync({ mode: 'upload', archive }).catch((error: unknown) => {
-      setFormError(error instanceof Error ? error.message : 'Failed to deploy');
-    });
+    setIsPacking(true);
+    let archive: Blob;
+    try {
+      archive = await createTarBlob(picked.result.kept);
+    } catch (error) {
+      setIsPacking(false);
+      setFormError(error instanceof Error ? error.message : 'Failed to package folder');
+      return;
+    }
+    setIsPacking(false);
+
+    await createMutation
+      .mutateAsync({ mode: 'upload', archive, filename: `${picked.name}.tar` })
+      .catch((error: unknown) => {
+        setFormError(error instanceof Error ? error.message : 'Failed to deploy');
+      });
   };
 
   return (
@@ -81,14 +103,14 @@ export function AppPage() {
 
       <section className="hero">
         <h1>Deploy your project</h1>
-        <p>Connect a Git repository or upload a build archive to deploy instantly.</p>
+        <p>Connect a Git repository or upload a project folder to deploy instantly.</p>
       </section>
 
       <section className="main-grid">
         <section className="panel">
           <div className="panel-header">
             <h2>New Deployment</h2>
-            <p>Start from a git URL or upload an archive.</p>
+            <p>Start from a git URL or upload a project folder.</p>
           </div>
 
           <form className="deployment-form" onSubmit={handleSubmit}>
@@ -120,19 +142,14 @@ export function AppPage() {
                 />
               </label>
             ) : (
-              <label className="field">
-                <label>Project archive</label>
-                <div className="file-input-wrapper">
-                  <div className="file-input-label">
-                    <span>{archive ? archive.name : 'Drop a file or click to browse'}</span>
-                  </div>
-                  <input
-                    type="file"
-                    accept=".tar,.tar.gz,.tgz,.zip"
-                    onChange={(event) => setArchive(event.target.files?.[0] ?? null)}
-                  />
-                </div>
-              </label>
+              <div className="field">
+                <label>Project folder</label>
+                <FolderPicker
+                  picked={picked}
+                  onPicked={setPicked}
+                  disabled={createMutation.isPending || isPacking}
+                />
+              </div>
             )}
 
             {(formError || createMutation.error) ? (
@@ -143,7 +160,11 @@ export function AppPage() {
               <p className="form-message success">Deployment queued</p>
             ) : null}
 
-            <button type="submit" className="submit-button" disabled={createMutation.isPending}>
+            <button
+              type="submit"
+              className="submit-button"
+              disabled={createMutation.isPending || isPacking}
+            >
               {submitLabel}
             </button>
           </form>

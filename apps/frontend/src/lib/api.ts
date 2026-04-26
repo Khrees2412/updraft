@@ -10,7 +10,7 @@ type ApiEnvelope<T> = {
 
 type CreateDeploymentInput =
   | { mode: 'git'; gitUrl: string }
-  | { mode: 'upload'; archive: File };
+  | { mode: 'upload'; archive: Blob; filename: string };
 
 export async function listDeployments(): Promise<Deployment[]> {
   const response = await fetch(`${API_BASE_URL}/deployments`);
@@ -31,7 +31,7 @@ export async function createDeployment(input: CreateDeploymentInput): Promise<De
       ? JSON.stringify({ git_url: input.gitUrl })
       : (() => {
           const formData = new FormData();
-          formData.set('archive', input.archive);
+          formData.set('archive', input.archive, input.filename);
           return formData;
         })(),
   });

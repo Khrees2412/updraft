@@ -225,38 +225,86 @@ input {
   box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.1);
 }
 
-.file-input-wrapper {
-  position: relative;
-}
-
-.file-input-label {
+.folder-drop-zone {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 0.25rem;
   padding: 2rem 1rem;
   border: 2px dashed var(--color-gray-300);
   border-radius: var(--border-radius-md);
   background: var(--color-gray-50);
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s;
   text-align: center;
+  transition: border-color 0.15s, background 0.15s;
 }
 
-.file-input-label:hover {
-  border-color: var(--color-gray-400);
+.folder-drop-zone:hover,
+.folder-drop-zone.is-dragover {
+  border-color: var(--color-black);
   background: var(--color-gray-100);
 }
 
-.file-input-label span {
-  font-size: 0.875rem;
+.folder-drop-title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--color-gray-900);
+}
+
+.folder-drop-hint {
+  margin: 0;
+  font-size: 0.8125rem;
   color: var(--color-gray-500);
 }
 
-.field input[type="file"] {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
+.folder-summary {
+  padding: 1rem;
+  border: 1px solid var(--color-gray-200);
+  border-radius: var(--border-radius-md);
+  background: var(--color-white);
+}
+
+.folder-summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.folder-summary-name {
+  margin: 0 0 0.25rem;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--color-gray-900);
+}
+
+.folder-summary-stats {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--color-gray-500);
+}
+
+.link-button {
+  border: none;
+  background: transparent;
+  color: var(--color-gray-700);
+  font-size: 0.875rem;
+  font-weight: 500;
   cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--border-radius-sm);
+}
+
+.link-button:hover {
+  background: var(--color-gray-100);
+  color: var(--color-gray-900);
+}
+
+.link-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .submit-button {
