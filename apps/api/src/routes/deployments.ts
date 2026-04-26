@@ -109,6 +109,27 @@ export function createDeploymentsRouter(db: Database.Database, options: Deployme
     }
   });
 
+  // POST /deployments/:id/retry — retry a failed deployment
+  router.post('/:id/retry', async (c) => {
+    try {
+      const deployment = deployments.getById(c.req.param('id'));
+      if (!deployment) throw new DeploymentNotFoundError(c.req.param('id'));
+      if (deployment.status !== 'failed') {
+        throw new ConflictError(`Only failed deployments can be retried. Current status: ${deployment.status}`);
+      }
+      const updated = deployments.forceStatusUpdate(deployment.id, 'pending');
+      logs.append({
+        deployment_id: updated.id,
+        stage: 'system',
+        message: 'Deployment re-queued for retry',
+      });
+      enqueue(updated.id);
+      return c.json({ success: true, message: `Deployment ${updated.id} re-queued for retry`, data: updated });
+    } catch (err) {
+      return handleError(c, err);
+    }
+  });
+
   const enqueueRedeploy = async (deploymentId: string, imageTag: string) => {
     const base = deployments.getById(deploymentId);
     if (!base) throw new DeploymentNotFoundError(deploymentId);

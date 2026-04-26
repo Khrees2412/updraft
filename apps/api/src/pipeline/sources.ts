@@ -45,6 +45,9 @@ export function createGitAcquirer(deps: GitAcquirerDeps = {}): SourceAcquirer {
       if (!isValidGitUrl(deployment.source_ref)) {
         throw new SourceAcquisitionError(`Invalid git URL: ${deployment.source_ref}`);
       }
+      if (fs.existsSync(workspaceDir)) {
+        fs.rmSync(workspaceDir, { recursive: true, force: true });
+      }
       fs.mkdirSync(path.dirname(workspaceDir), { recursive: true });
       await logger.log(`Cloning ${deployment.source_ref}`);
       const result = await runStreaming(
@@ -75,6 +78,9 @@ export function createUploadAcquirer(deps: UploadAcquirerDeps = {}): SourceAcqui
       const archivePath = path.join(uploadDir, deployment.source_ref);
       if (!fs.existsSync(archivePath)) {
         throw new SourceAcquisitionError(`Upload archive not found at ${archivePath}`);
+      }
+      if (fs.existsSync(workspaceDir)) {
+        fs.rmSync(workspaceDir, { recursive: true, force: true });
       }
       fs.mkdirSync(workspaceDir, { recursive: true });
       await logger.log(`Extracting ${deployment.source_ref}`);

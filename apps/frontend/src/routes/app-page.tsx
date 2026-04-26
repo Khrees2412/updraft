@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Deployment } from '@updraft/shared-types';
-import { createDeployment, listDeployments } from '../lib/api';
+import { cancelDeployment, createDeployment, listDeployments, retryDeployment } from '../lib/api';
 import { LogViewer } from '../components/log-viewer';
 import { FolderPicker, type PickedFolder } from '../components/folder-picker';
 import { createTarBlob } from '../lib/tar';
+import { useToast } from '../components/toast';
 
 type SourceMode = 'git' | 'upload';
 
@@ -14,6 +15,7 @@ function formatDate(value: string): string {
 
 export function AppPage() {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [mode, setMode] = useState<SourceMode>('git');
   const [gitUrl, setGitUrl] = useState('');
   const [picked, setPicked] = useState<PickedFolder | null>(null);
@@ -32,6 +34,26 @@ export function AppPage() {
       setGitUrl('');
       setPicked(null);
       setFormError(null);
+      toast.showToast('Deployment queued', 'success');
+      await queryClient.invalidateQueries({ queryKey: ['deployments'] });
+    },
+    onError: (error: Error) => {
+      setFormError(error.message);
+    },
+  });
+
+  const retryMutation = useMutation({
+    mutationFn: retryDeployment,
+    onSuccess: async () => {
+      toast.showToast('Retry queued', 'success');
+      await queryClient.invalidateQueries({ queryKey: ['deployments'] });
+    },
+  });
+
+  const cancelMutation = useMutation({
+    mutationFn: cancelDeployment,
+    onSuccess: async () => {
+      toast.showToast('Deployment cancelled', 'info');
       await queryClient.invalidateQueries({ queryKey: ['deployments'] });
     },
   });
@@ -152,12 +174,8 @@ export function AppPage() {
               </div>
             )}
 
-            {(formError || createMutation.error) ? (
-              <p className="form-message error">{formError ?? createMutation.error?.message}</p>
-            ) : null}
-
-            {createMutation.isSuccess ? (
-              <p className="form-message success">Deployment queued</p>
+            {formError ? (
+              <p className="form-message error">{formError}</p>
             ) : null}
 
             <button
@@ -201,6 +219,24 @@ export function AppPage() {
                     </div>
                     <div className="deployment-meta">
                       <span className={`status-pill status-${deployment.status}`}>{deployment.status}</span>
+                      {deployment.status === 'failed' && (
+                        <button
+                          className="row-action-btn retry-btn"
+                          onClick={(e) => { e.stopPropagation(); retryMutation.mutate(deployment.id); }}
+                          disabled={retryMutation.isPending}
+                        >
+                          Retry
+                        </button>
+                      )}
+                      {(deployment.status === 'pending' || deployment.status === 'building') && (
+                        <button
+                          className="row-action-btn cancel-btn"
+                          onClick={(e) => { e.stopPropagation(); cancelMutation.mutate(deployment.id); }}
+                          disabled={cancelMutation.isPending}
+                        >
+                          Cancel
+                        </button>
+                      )}
                       {deployment.image_tag ? <span className="image-tag">{deployment.image_tag}</span> : null}
                       <span className="deployment-time">{formatDate(deployment.created_at)}</span>
                     </div>

@@ -44,11 +44,13 @@ services:
       DEPLOYMENT_NETWORK: updraft_deployments
       APP_INTERNAL_PORT: "3000"
       UPLOAD_DIR: /data/uploads
+      WORKSPACE_ROOT: /app/workspaces
       # Railpack uses BuildKit directly (gRPC). Point at the sidecar container
       # — railpack will spawn a `docker exec` against it via the mounted socket.
       BUILDKIT_HOST: "docker-container://updraft-buildkit-1"
     volumes:
       - api_data:/data
+      - ./apps/api/data/workspaces:/app/workspaces
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - deployments

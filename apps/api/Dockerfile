@@ -37,8 +37,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 # Railpack CLI — installs to $HOME/.local/bin/railpack
-RUN curl -fsSL https://railpack.com/install.sh | sh \
-  && railpack --version
+RUN mkdir -p /root/.local/bin \
+  && curl -fsSL https://railpack.com/install.sh | sh -s -- -b /root/.local/bin \
+  && /root/.local/bin/railpack --version
 
 ENV PATH="/root/.local/bin:${PATH}"
 WORKDIR /app

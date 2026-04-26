@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import type { Deployment, DeploymentBuild, DeploymentLogEvent } from '@updraft/shared-types';
-import { listDeploymentBuilds, redeployDeployment, streamDeploymentLogs } from '../lib/api';
+import { listDeploymentBuilds, redeployDeployment, retryDeployment, streamDeploymentLogs } from '../lib/api';
+import { useToast } from './toast';
 
 type StreamState = 'connecting' | 'live' | 'error' | 'done';
 
@@ -16,15 +17,27 @@ function formatTs(ts: string): string {
 }
 
 export function LogViewer({ deployment, onClose, onRedeployQueued }: Props) {
+  const toast = useToast();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [logs, setLogs] = useState<DeploymentLogEvent[]>([]);
   const [streamState, setStreamState] = useState<StreamState>('connecting');
   const [liveStatus, setLiveStatus] = useState(deployment.status);
   const [doneStatus, setDoneStatus] = useState<string | null>(null);
-  const [redeployMessage, setRedeployMessage] = useState<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const lastSeqRef = useRef(0);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [onClose]);
 
   const connect = useCallback((afterSeq: number) => {
     setStreamState('connecting');
@@ -74,8 +87,16 @@ export function LogViewer({ deployment, onClose, onRedeployQueued }: Props) {
   const redeployMutation = useMutation({
     mutationFn: ({ imageTag, action }: { imageTag: string; action: 'redeploy' | 'rollback' }) =>
       redeployDeployment(deployment.id, imageTag, action),
-    onSuccess: async (_queued, { imageTag, action }) => {
-      setRedeployMessage(`${action} queued for ${imageTag}`);
+    onSuccess: async (_queued, { action }) => {
+      toast.showToast(`${action} queued`, 'success');
+      await onRedeployQueued();
+    },
+  });
+
+  const retryMutation = useMutation({
+    mutationFn: () => retryDeployment(deployment.id),
+    onSuccess: async () => {
+      toast.showToast('Retry queued', 'success');
       await onRedeployQueued();
     },
   });
@@ -83,8 +104,11 @@ export function LogViewer({ deployment, onClose, onRedeployQueued }: Props) {
   const isFailed = liveStatus === 'failed';
   const currentImageTag = deployment.image_tag ?? null;
 
-  return (
-      <section className={`log-panel${isFailed ? ' log-panel--failed' : ''}`}>
+return (
+      <section
+        ref={panelRef}
+        className={`log-panel${isFailed ? ' log-panel--failed' : ''}${isFullscreen ? ' log-panel--fullscreen' : ''}`}
+      >
         <div className="log-panel-header">
           <div className="log-panel-title">
             <span className="log-panel-id">{deployment.id}</span>
@@ -94,9 +118,27 @@ export function LogViewer({ deployment, onClose, onRedeployQueued }: Props) {
               {streamState === 'error' && 'Reconnecting…'}
               {streamState === 'done' && `Done · ${doneStatus}`}
             </span>
+            {isFailed && (
+              <button
+                className="retry-button"
+                disabled={retryMutation.isPending}
+                onClick={() => retryMutation.mutate()}
+              >
+                {retryMutation.isPending ? 'Retrying...' : 'Retry'}
+              </button>
+            )}
           </div>
-        <button className="log-close-button" onClick={onClose} aria-label="Close log viewer">×</button>
-      </div>
+          <div className="log-panel-actions">
+            <button
+              className="log-fullscreen-button"
+              onClick={() => setIsFullscreen(!isFullscreen)}
+              aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+            >
+              {isFullscreen ? '⤓' : '⤒'}
+            </button>
+            <button className="log-close-button" onClick={onClose} aria-label="Close log viewer">×</button>
+          </div>
+        </div>
       <div className="build-history">
         <div className="build-history-header">
           <p className="build-history-title">Image tags</p>
@@ -106,7 +148,6 @@ export function LogViewer({ deployment, onClose, onRedeployQueued }: Props) {
               {buildsQuery.error instanceof Error ? buildsQuery.error.message : 'Failed to load builds'}
             </span>
           ) : null}
-          {redeployMessage ? <span className="build-history-meta success">{redeployMessage}</span> : null}
         </div>
         {buildsQuery.data && buildsQuery.data.length > 0 ? (
           <div className="build-chip-list">

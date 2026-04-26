@@ -70,6 +70,28 @@ export async function redeployDeployment(
   return payload.data;
 }
 
+export async function retryDeployment(deploymentId: string): Promise<Deployment> {
+  const response = await fetch(`${API_BASE_URL}/deployments/${deploymentId}/retry`, {
+    method: 'POST',
+  });
+  const payload = (await response.json()) as ApiEnvelope<Deployment>;
+  if (!response.ok || !payload.success) {
+    throw new Error(payload.message || 'Failed to retry deployment');
+  }
+  return payload.data;
+}
+
+export async function cancelDeployment(deploymentId: string): Promise<Deployment> {
+  const response = await fetch(`${API_BASE_URL}/deployments/${deploymentId}/cancel`, {
+    method: 'POST',
+  });
+  const payload = (await response.json()) as ApiEnvelope<Deployment>;
+  if (!response.ok || !payload.success) {
+    throw new Error(payload.message || 'Failed to cancel deployment');
+  }
+  return payload.data;
+}
+
 export function streamDeploymentLogs(
   deploymentId: string,
   afterSequence: number,

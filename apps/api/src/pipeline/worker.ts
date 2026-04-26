@@ -41,7 +41,7 @@ async function runStage<T>(stage: LogStage, fn: () => Promise<T>): Promise<T> {
 export async function runPipeline(deploymentId: string, deps: PipelineDeps): Promise<void> {
   const { deployments, logs, builds } = deps;
   const broadcast = deps.publish ?? publish;
-  const workspaceRoot = deps.workspaceRoot ?? path.join(process.cwd(), 'data', 'workspaces');
+  const workspaceRoot = deps.workspaceRoot ?? process.env['WORKSPACE_ROOT'] ?? path.join(process.cwd(), 'data', 'workspaces');
   const acquirerFor = deps.acquirer ?? ((t) => selectAcquirer(t));
   const builder = deps.builder ?? createRailpackBuilder();
   const runner = deps.runner ?? createDockerRunner();

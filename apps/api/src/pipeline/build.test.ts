@@ -48,10 +48,14 @@ describe('railpack builder', () => {
       now: () => new Date('2026-04-24T00:00:00.000Z'),
     });
     const logger = loggerStub();
-    const result = await builder.build({ deployment, workspacePath: '/tmp/ws', logger });
+    const wsPath = '/tmp/ws';
+    const result = await builder.build({ deployment, workspacePath: wsPath, logger });
     const expectedTag = `dep-abc:${Math.floor(new Date('2026-04-24T00:00:00.000Z').getTime() / 1000)}`;
     expect(result.image_tag).toBe(expectedTag);
-    expect(captured.args).toEqual(['build', '/tmp/ws', '--name', expectedTag]);
+    expect(captured.args?.[0]).toBe('-c');
+    expect(captured.args?.[1]).toContain('/root/.local/bin/railpack');
+    expect(captured.args?.[1]).toContain('build');
+    expect(captured.args?.[1]).toContain(wsPath);
     expect(logger.lines).toContain('Detected Node.js');
     expect(logger.lines).toContain('Building...');
   });

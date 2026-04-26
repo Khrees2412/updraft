@@ -34,10 +34,10 @@ export function createRailpackBuilder(deps: RailpackBuilderDeps = {}): Builder {
     async build({ deployment, workspacePath, logger }) {
       const image_tag = `dep-${deployment.id}:${Math.floor(now().getTime() / 1000)}`;
       await logger.log(`Building image ${image_tag} from ${workspacePath}`);
-      console.log(`[build] running: ${command} build ${workspacePath} --name ${image_tag}`);
+      // Use sh -c to run the command
       const result = await runStreaming(
-        command,
-        ['build', workspacePath, '--name', image_tag],
+        'sh',
+        ['-c', `${command} build ${workspacePath} --name ${image_tag}`],
         async (line) => {
           await logger.log(line);
         },

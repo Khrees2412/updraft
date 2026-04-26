@@ -205,6 +205,16 @@ export function createDeploymentRepository(db: Database.Database) {
       return { ...current, status: next, updated_at: now };
     },
 
+    forceStatusUpdate(id: string, next: DeploymentStatus): Deployment {
+      const current = this.getById(id);
+      if (!current) throw new DeploymentNotFoundError(id);
+      const now = new Date().toISOString();
+      db.prepare(
+        `UPDATE deployments SET status = ?, updated_at = ? WHERE id = ?`,
+      ).run(next, now, id);
+      return { ...current, status: next, updated_at: now };
+    },
+
     updateStatusWithLog(
       id: string,
       next: DeploymentStatus,
