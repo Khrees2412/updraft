@@ -74,6 +74,33 @@ function buildRoute(deploymentId: string, containerName: string, internalPort: n
               {
                 handler: 'reverse_proxy',
                 upstreams: [{ dial: `${containerName}:${internalPort}` }],
+                // Inject <base href="/d/:id/"> into HTML responses so that apps
+                // built with absolute asset paths (Vite default base: "/") resolve
+                // their assets through the deployment prefix rather than the root.
+                handle_response: [
+                  {
+                    match: { headers: { 'Content-Type': ['*text/html*'] } },
+                    routes: [
+                      {
+                        handle: [
+                          {
+                            handler: 'replace_response',
+                            replacements: [
+                              {
+                                search: '<head>',
+                                replace: `<head><base href="${pathPrefix}/">`,
+                              },
+                              {
+                                search: '<HEAD>',
+                                replace: `<HEAD><base href="${pathPrefix}/">`,
+                              },
+                            ],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                ],
               },
             ],
           },

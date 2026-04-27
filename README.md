@@ -44,7 +44,150 @@ Failure at any stage sets status to `failed` and writes an error log entry — t
 
 **Log streaming** — `GET /deployments/:id/logs/stream` replays historical rows from SQLite first, then switches to live events from an in-process pub/sub broker. The client reconnects automatically on disconnect and resumes from the last `sequence` via `Last-Event-ID`, so nothing is lost across reconnects.
 
-**Caddy routing** — static routes for `/api` and `/` are in `infra/caddy/caddy.json`. When a deployment finishes, the API calls Caddy's Admin API to insert a `reverse_proxy` route for `/d/:id` pointing at `dep-<id>:3000` on the internal Docker network. No Caddyfile reloads, no restarts.
+**Caddy routing** — static routes for `/api` and `/` are in `infra/caddy/caddy.json`. When a deployment finishes, the API calls Caddy's Admin API to insert a `reverse_proxy` route for `/d/:id` pointing at `dep-<id>:3000` on the internal Docker network. No Caddyfile reloads, no restarts. On API startup, all `running` deployments have their routes re-registered — so a Caddy or API restart doesn't blank out live deployments.
+
+**Asset path fix** — Railpack-built apps default to absolute asset paths (`/assets/app.js`). Without intervention, the browser would fetch those from the root, hitting the Updraft SPA instead of the deployed container. Caddy injects `<base href="/d/:id/">` into every HTML response from a deployed container so relative resolution works correctly without requiring any changes to the deployed app.
+
+## API reference
+
+All routes are under `/api` (Caddy strips the prefix before forwarding to the API on `:8088`).
+
+All responses follow the envelope:
+
+```json
+{ "success": true, "message": "...", "data": <payload> }
+```
+
+Errors return the same shape with `"success": false` and an appropriate HTTP status.
+
+### Deployments
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/deployments` | Create and enqueue a new deployment |
+| `GET` | `/api/deployments` | List all deployments, newest first |
+| `GET` | `/api/deployments/:id` | Get a single deployment |
+| `GET` | `/api/deployments/:id/builds` | List prior image builds for the same source |
+| `POST` | `/api/deployments/:id/cancel` | Cancel a non-terminal deployment |
+| `POST` | `/api/deployments/:id/retry` | Re-queue a failed deployment from scratch |
+| `POST` | `/api/deployments/:id/redeploy` | Deploy a prior image tag (skips Railpack) |
+| `POST` | `/api/deployments/:id/rollback` | Alias of redeploy — same behaviour, different intent |
+| `GET` | `/api/deployments/:id/logs/stream` | SSE stream of build + deploy logs |
+
+**`POST /api/deployments`** — two accepted content types:
+
+```
+# Git URL
+Content-Type: application/json
+{ "git_url": "https://github.com/user/repo" }
+
+# Folder upload
+Content-Type: multipart/form-data
+archive=<tar file>   (field name must be "archive")
+```
+
+Returns `201` with the created `Deployment` object.
+
+**`POST /api/deployments/:id/redeploy`** and **`POST /api/deployments/:id/rollback`**:
+
+```json
+{ "image_tag": "dep-<id>:<timestamp>" }
+```
+
+`image_tag` must be a value returned from `GET /api/deployments/:id/builds`. Creates a new deployment row that reuses the existing image — Railpack is skipped entirely.
+
+**`GET /api/deployments/:id/logs/stream`** — Server-Sent Events, three event types:
+
+| Event | Data |
+|-------|------|
+| `log` | `DeploymentLogEvent` — `{ id, deployment_id, stage, message, timestamp, sequence }` |
+| `status` | `{ deployment_id, status }` — fired on every status transition |
+| `done` | `{ status }` — fired once when a terminal status is reached; client should close |
+
+Resume after reconnect by passing the last received `sequence` as `Last-Event-ID` (standard SSE) or `?afterSequence=<n>` (query param fallback). Historical logs are replayed from SQLite before switching to the live broker.
+
+### Data shapes
+
+```typescript
+type DeploymentStatus = 'pending' | 'building' | 'deploying' | 'running' | 'failed' | 'cancelled';
+type DeploymentSourceType = 'git' | 'upload';
+type LogStage = 'build' | 'deploy' | 'system';
+
+interface Deployment {
+  id: string;
+  source_type: DeploymentSourceType;
+  source_ref: string;           // git URL or upload filename
+  status: DeploymentStatus;
+  image_tag?: string;           // set once Railpack build completes
+  container_id?: string;
+  container_name?: string;      // dep-<id> — stable name Caddy routes to
+  internal_port?: number;
+  route_path?: string;          // /d/<id>
+  live_url?: string;            // http://localhost:8080/d/<id>
+  previous_container_id?: string;
+  previous_container_name?: string;
+  created_at: string;           // ISO 8601
+  updated_at: string;
+}
+
+interface DeploymentLogEvent {
+  id: string;
+  deployment_id: string;
+  stage: LogStage;
+  message: string;
+  timestamp: string;
+  sequence: number;             // monotonically increasing, used for SSE resume
+}
+
+interface DeploymentBuild {
+  id: string;
+  source_type: DeploymentSourceType;
+  source_ref: string;
+  image_tag: string;
+  build_method: 'railpack' | 'reused';
+  created_by_deployment_id: string;
+  created_at: string;
+}
+```
+
+### Health check
+
+```
+GET /health  →  200 { status: "ok" }
+```
+
+## Environment variables
+
+All have defaults — nothing needs to be set for local development.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8088` | API listen port |
+| `DB_PATH` | `/data/updraft.db` | SQLite database file path |
+| `PUBLIC_BASE_URL` | `http://localhost:8080` | Base URL used to construct `live_url` |
+| `CADDY_ADMIN_URL` | `http://caddy:2019` | Caddy Admin API endpoint |
+| `DEPLOYMENT_NETWORK` | `updraft_deployments` | Docker network deployment containers join |
+| `APP_INTERNAL_PORT` | `3000` | Port the deployed container is expected to listen on |
+| `UPLOAD_DIR` | `<cwd>/data/uploads` | Where uploaded tar archives are stored |
+| `WORKSPACE_ROOT` | `/app/workspaces` | Where source is extracted before building |
+| `BUILDKIT_HOST` | `docker-container://updraft-buildkit-1` | BuildKit gRPC endpoint for Railpack |
+| `BUILD_CACHE_DIR` | `/tmp/updraft-cache` | Local BuildKit layer cache directory |
+| `BUILD_CACHE_REGISTRY` | unset | If set, use registry cache instead of local dir |
+| `DRAIN_TIMEOUT_MS` | `10000` | How long to wait for old container to drain before SIGKILL |
+
+## Repo layout
+
+```
+apps/
+  api/          Hono API — pipeline, SQLite, SSE broker
+  frontend/     Vite + React SPA — TanStack Router + Query
+  sample-app/   Minimal Node.js app for testing deployments
+packages/
+  shared-types/ TypeScript types shared between API and frontend
+infra/
+  caddy/        caddy.json — static routes loaded at startup
+docker-compose.yml
+```
 
 ## Build cache reuse (B-02)
 
@@ -117,6 +260,10 @@ The build was mostly straightforward but a few things bit me enough to be worth 
 
 **`nginx:alpine` failing to pull during frontend image build.** Hit a DNS/registry resolution failure on `docker.io/library/nginx:alpine` partway through development — the build would stall at the `FROM` line. Turned out to be a transient Docker Hub rate-limit / network issue rather than a code problem. Switched the frontend Dockerfile to use a pinned digest as a fallback, then it cleared up on its own.
 
+**Caddy routes lost on restart.** Dynamic Caddy routes live in memory only — a Caddy or API restart wiped all deployment routes and left running containers unreachable. Fixed by re-registering all `running` deployments' routes at API startup.
+
+**Absolute asset paths breaking deployed apps.** Railpack-built Vite/Bun apps default to `base: "/"`, so their HTML references `/assets/app.js`. The browser fetches that from the root, which hits the Updraft frontend SPA instead of the deployed container — CSS and JS silently missing. Fixed by having Caddy inject `<base href="/d/:id/">` into HTML responses from deployed containers.
+
 ## What I'd rip out
 
 The `dist/` test files end up in the vitest run alongside the `src/` files — they're duplicates. A one-line include pattern in `vitest.config.ts` fixes it, I just didn't get to it.
@@ -131,7 +278,7 @@ pnpm --filter @updraft/api exec vitest run
 
 ## Brimble deploy + feedback
 
-> **Deployed:** *(link goes here — fill in after deploying)*
+> **Deployed:** https://updraft.brimble.app/
 
 **How the deploy is set up:**
 
@@ -139,12 +286,21 @@ The frontend is deployed as a static SPA. Brimble settings:
 
 | Setting | Value |
 |---|---|
+| Install command | `pnpm install` |
 | Build command | `pnpm build:brimble` |
 | Output directory | `public` |
 | Root directory | `.` (repo root) |
 
-`pnpm build:brimble` runs `pnpm --filter @updraft/frontend build` (Vite build) and copies the output to `public/` at the repo root. The `brimble.json` SPA rewrite (`/* → /index.html`) is already at the repo root.
+`pnpm build:brimble` runs `pnpm --filter @updraft/frontend build` (Vite build) and copies the output to `public/` at the repo root. The `brimble.json` SPA rewrite (`/* → /index.html`) is at the repo root.
 
-The Vite config resolves `@updraft/shared-types` directly from its TypeScript source via a `resolve.alias`, so there's no need to pre-build the package before building the frontend.
+The Vite config resolves `@updraft/shared-types` directly from its TypeScript source via a `resolve.alias`, so there's no need to pre-build the package before the frontend build.
 
-> **Feedback:** *(fill in after deploying — be direct: what broke, what was confusing, what you'd change)*
+**Feedback:**
+
+The deploy itself went smoothly — Node.js was auto-detected so I switched to Vite, the build ran clean on first try, and the SPA rewrite config (`brimble.json`) was picked up without any extra steps. No friction getting it live.
+
+The one friction point I hit is that the free plan is static sites only. The deployed app shows an error on load — `Unexpected token '<'... is not valid JSON` — because the "Recent Deployments" panel calls `/api/deployments`, gets back a Brimble 404 HTML page, and tries to parse it as JSON. Deploying the backend (the Hono API, SQLite, the pipeline worker) alongside the frontend requires a paid plan. That's a reasonable business decision, but it's not obvious from the deploy UI — there's no callout explaining why backend routes won't work on the free tier or prompting an upgrade path.
+
+A few things I'd change: the error state in the UI could be friendlier — right now it surfaces a raw JSON parse error rather than "can't reach the API." And the docs don't cover monorepo setups at all — I had to guess at the install/build command pairing (`pnpm install` + `pnpm build:brimble` from the repo root); a short monorepo guide would save time. The import flow does expose build command / output directory / install command fields, but there's no documentation on what to put in them for a pnpm workspace.
+
+One more issue worth flagging: a Bun app I deployed through Updraft had its CSS silently not load — the JS rendered but the page was completely unstyled. This turned out to be an asset path issue (Railpack-built apps use absolute paths by default), not a Brimble issue — but the failure mode is identical and equally hard to debug without knowing what to look for. Surfacing 404s for stylesheet requests more visibly would help in both contexts.
