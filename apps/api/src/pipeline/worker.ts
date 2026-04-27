@@ -1,8 +1,9 @@
 import path from 'node:path';
 import type { DeploymentSourceType, LogStage } from '@updraft/shared-types';
-import type { BuildRepository, DeploymentRepository, LogRepository } from '../db/repository.js';
+import type { BuildCacheRepository, BuildRepository, DeploymentRepository, LogRepository } from '../db/repository.js';
 import { createStageLogger, type StageLogger } from './logger.js';
 import { selectAcquirer, type SourceAcquirer } from './sources.js';
+import { prepareWorkspace } from './prepare.js';
 import { createRailpackBuilder, type Builder } from './build.js';
 import { createDockerRunner, type Runner } from './runner.js';
 import { createPathRouteAssigner, type RouteAssigner } from './routing.js';
@@ -13,6 +14,7 @@ export interface PipelineDeps {
   deployments: DeploymentRepository;
   logs: LogRepository;
   builds: BuildRepository;
+  buildCache?: BuildCacheRepository;
   publish?: typeof publish;
   acquirer?: (sourceType: DeploymentSourceType) => SourceAcquirer;
   builder?: Builder;
@@ -39,11 +41,11 @@ async function runStage<T>(stage: LogStage, fn: () => Promise<T>): Promise<T> {
 }
 
 export async function runPipeline(deploymentId: string, deps: PipelineDeps): Promise<void> {
-  const { deployments, logs, builds } = deps;
+  const { deployments, logs, builds, buildCache } = deps;
   const broadcast = deps.publish ?? publish;
   const workspaceRoot = deps.workspaceRoot ?? process.env['WORKSPACE_ROOT'] ?? path.join(process.cwd(), 'data', 'workspaces');
   const acquirerFor = deps.acquirer ?? ((t) => selectAcquirer(t));
-  const builder = deps.builder ?? createRailpackBuilder();
+  const builder = deps.builder ?? createRailpackBuilder({ cacheRepo: buildCache });
   const runner = deps.runner ?? createDockerRunner();
   const routeAssigner = deps.routeAssigner ?? createPathRouteAssigner();
   const routeRegistrar = deps.routeRegistrar ?? createCaddyRouteRegistrar();
@@ -83,6 +85,10 @@ export async function runPipeline(deploymentId: string, deps: PipelineDeps): Pro
         }),
       );
 
+      await runStage('system', () =>
+        prepareWorkspace({ workspacePath, logger: loggerFor('system') }),
+      );
+
       const built = await runStage('build', () =>
         builder.build({ deployment, workspacePath, logger: loggerFor('build') }),
       );
@@ -100,10 +106,16 @@ export async function runPipeline(deploymentId: string, deps: PipelineDeps): Pro
 
     await sysLogger.status('deploying');
     const withImage = deployments.getById(deploymentId)!;
-    const { container_id, container_name, internal_port } = await runStage('deploy', () =>
+    const { container_id, container_name, internal_port, previous_container_id, previous_container_name } = await runStage('deploy', () =>
       runner.run({ deployment: withImage, imageTag: image_tag, logger: loggerFor('deploy') }),
     );
-    deployments.updateFields(deploymentId, { container_id, container_name, internal_port });
+    deployments.updateFields(deploymentId, {
+      container_id,
+      container_name,
+      internal_port,
+      ...(previous_container_id ? { previous_container_id } : {}),
+      ...(previous_container_name ? { previous_container_name } : {}),
+    });
     await sysLogger.log(`Container started: ${container_id}`);
 
     const routedDeployment = deployments.getById(deploymentId)!;

@@ -1,24 +1,30 @@
 import ignore, { type Ignore } from 'ignore';
 
 const BASELINE_PATTERNS: readonly string[] = [
+  // Version control — exclude .git itself but keep .gitignore so loadGitignore() can read it
   '.git',
-  '.gitignore',
+  // Dependencies — match at any depth so monorepo node_modules are also excluded
   'node_modules',
-  '.next',
-  '.nuxt',
-  '.svelte-kit',
-  '.vercel',
-  '.netlify',
-  '.turbo',
-  '.cache',
-  'dist',
-  'build',
-  'out',
-  'coverage',
+  // Framework build caches — root-level only (leading slash) to avoid
+  // stripping legitimate source folders like src/build/ or lib/dist/
+  '/.next',
+  '/.nuxt',
+  '/.svelte-kit',
+  '/.vercel',
+  '/.netlify',
+  '/.turbo',
+  '/.cache',
+  '/dist',
+  '/build',
+  '/out',
+  '/coverage',
+  // Secrets / local config — never upload these
   '.env',
   '.env.*',
+  // OS junk
   '.DS_Store',
   'Thumbs.db',
+  // Log files
   '*.log',
   'npm-debug.log*',
   'yarn-debug.log*',

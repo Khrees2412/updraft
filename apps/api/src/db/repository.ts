@@ -22,6 +22,8 @@ type DeploymentRow = {
   container_id: string | null;
   container_name: string | null;
   internal_port: number | null;
+  previous_container_id: string | null;
+  previous_container_name: string | null;
   route_path: string | null;
   live_url: string | null;
   created_at: string;
@@ -61,6 +63,8 @@ function rowToDeployment(row: DeploymentRow): Deployment {
   if (row.container_id !== null) d.container_id = row.container_id;
   if (row.container_name !== null) d.container_name = row.container_name;
   if (row.internal_port !== null) d.internal_port = row.internal_port;
+  if (row.previous_container_id !== null) d.previous_container_id = row.previous_container_id;
+  if (row.previous_container_name !== null) d.previous_container_name = row.previous_container_name;
   if (row.route_path !== null) d.route_path = row.route_path;
   if (row.live_url !== null) d.live_url = row.live_url;
   return d;
@@ -132,6 +136,8 @@ export interface UpdateDeploymentInput {
   container_id?: string;
   container_name?: string;
   internal_port?: number;
+  previous_container_id?: string;
+  previous_container_name?: string;
   route_path?: string;
   live_url?: string;
 }
@@ -382,3 +388,40 @@ export function createBuildRepository(db: Database.Database) {
 export type DeploymentRepository = ReturnType<typeof createDeploymentRepository>;
 export type LogRepository = ReturnType<typeof createLogRepository>;
 export type BuildRepository = ReturnType<typeof createBuildRepository>;
+
+export interface BuildCacheEntry {
+  id: string;
+  source_key: string;
+  cache_ref: string;
+  last_used_at: string;
+  hit_count: number;
+}
+
+export function createBuildCacheRepository(db: Database.Database) {
+  return {
+    get(source_key: string): BuildCacheEntry | null {
+      const row = db
+        .prepare(`SELECT * FROM build_cache WHERE source_key = ?`)
+        .get(source_key) as BuildCacheEntry | undefined;
+      return row ?? null;
+    },
+
+    upsert(source_key: string, cache_ref: string): BuildCacheEntry {
+      const now = new Date().toISOString();
+      const existing = this.get(source_key);
+      if (existing) {
+        db.prepare(
+          `UPDATE build_cache SET cache_ref = ?, last_used_at = ?, hit_count = hit_count + 1 WHERE source_key = ?`,
+        ).run(cache_ref, now, source_key);
+        return { ...existing, cache_ref, last_used_at: now, hit_count: existing.hit_count + 1 };
+      }
+      const id = nanoid();
+      db.prepare(
+        `INSERT INTO build_cache (id, source_key, cache_ref, last_used_at, hit_count) VALUES (?, ?, ?, ?, 0)`,
+      ).run(id, source_key, cache_ref, now);
+      return { id, source_key, cache_ref, last_used_at: now, hit_count: 0 };
+    },
+  };
+}
+
+export type BuildCacheRepository = ReturnType<typeof createBuildCacheRepository>;

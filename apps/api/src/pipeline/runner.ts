@@ -13,6 +13,8 @@ export interface RunResult {
   container_id: string;
   container_name: string;
   internal_port: number;
+  previous_container_id?: string;
+  previous_container_name?: string;
 }
 
 export interface Runner {
@@ -25,6 +27,7 @@ export interface DockerRunnerDeps {
   internalPort?: number;
   healthCheckIntervalMs?: number;
   healthCheckTimeoutMs?: number;
+  drainTimeoutMs?: number;
 }
 
 async function ensureNetwork(docker: Dockerode, name: string): Promise<void> {
@@ -34,33 +37,114 @@ async function ensureNetwork(docker: Dockerode, name: string): Promise<void> {
   }
 }
 
+async function waitUntilContainerRunning(
+  container: Dockerode.Container,
+  intervalMs: number,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const state = (await container.inspect()).State;
+    const status = state.Status ?? 'unknown';
+    const health = (state as { Health?: { Status?: string } }).Health?.Status;
+
+    if (status === 'exited' || status === 'dead' || health === 'unhealthy') {
+      throw new DeployFailedError(
+        `Container failed to start (status=${status}, health=${health ?? 'none'})`,
+      );
+    }
+
+    if (status === 'running' && (!health || health === 'healthy')) return;
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new DeployFailedError(`Container did not start within ${timeoutMs}ms`);
+}
+
+async function waitUntilAppResponding(
+  containerName: string,
+  internalPort: number,
+  intervalMs: number,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2000);
+      const res = await fetch(`http://${containerName}:${internalPort}/`, {
+        method: 'GET',
+        signal: controller.signal,
+      } as any);
+      clearTimeout(timeout);
+      if (res.status < 500) return;
+    } catch {
+      // App isn't ready yet — keep waiting
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new DeployFailedError(`App did not respond within ${timeoutMs}ms`);
+}
+
+async function drainContainer(
+  docker: Dockerode,
+  containerName: string,
+  drainTimeoutMs: number,
+  logger: StageLogger,
+): Promise<void> {
+  try {
+    const c = docker.getContainer(containerName);
+    await logger.log(`[handoff] Stopping old container ${containerName} (drain timeout ${drainTimeoutMs}ms)`);
+    // Docker stop sends SIGTERM then SIGKILL after t seconds
+    const timeoutSec = Math.ceil(drainTimeoutMs / 1000);
+    await c.stop({ t: timeoutSec });
+    await c.remove();
+    await logger.log(`[handoff] Old container ${containerName} removed`);
+  } catch (err: unknown) {
+    const code = (err as { statusCode?: number }).statusCode;
+    if (code === 404) return; // already gone
+    await logger.log(`[handoff] Warning: could not stop old container ${containerName}: ${(err as Error).message}`);
+  }
+}
+
 export function createDockerRunner(deps: DockerRunnerDeps = {}): Runner {
   const docker = deps.docker ?? new Dockerode();
   const network = deps.network ?? process.env['DEPLOYMENT_NETWORK'] ?? 'updraft_deployments';
   const internalPort = deps.internalPort ?? Number(process.env['APP_INTERNAL_PORT'] ?? 3000);
   const healthCheckIntervalMs = deps.healthCheckIntervalMs ?? 1000;
   const healthCheckTimeoutMs = deps.healthCheckTimeoutMs ?? 30000;
+  const drainTimeoutMs = deps.drainTimeoutMs ?? Number(process.env['DRAIN_TIMEOUT_MS'] ?? 10000);
 
   return {
     async run({ deployment, imageTag, logger }) {
-      const containerName = `dep-${deployment.id}`;
-
       await ensureNetwork(docker, network);
 
-      // Remove any prior container with the same name
+      // B-03: two-container zero-downtime handoff.
+      // The stable name (dep-<id>) is what Caddy routes to.
+      // We start a new container under a timestamped revision name, health-check
+      // it, rename it to the stable name (which atomically replaces the slot),
+      // then drain the old container.
+      const stableName = `dep-${deployment.id}`;
+      const revName = `${stableName}-rev-${Date.now()}`;
+
+      // Find any currently-running container under the stable name so we can
+      // drain it after the new one is healthy.
+      let oldContainerId: string | undefined;
+      let oldContainerName: string | undefined;
       try {
-        const prior = docker.getContainer(containerName);
-        await prior.remove({ force: true });
-        await logger.log(`Removed prior container ${containerName}`);
+        const existing = docker.getContainer(stableName);
+        const info = await existing.inspect();
+        oldContainerId = info.Id;
+        oldContainerName = stableName;
       } catch (err: unknown) {
-        // 404 means it didn't exist — that's fine
         if ((err as { statusCode?: number }).statusCode !== 404) throw err;
+        // No existing container — first deploy
       }
 
-      await logger.log(`Starting container ${containerName} from ${imageTag} on network ${network}`);
+      await logger.log(`[handoff] Starting new container ${revName} from ${imageTag} on network ${network}`);
 
-      const container = await docker.createContainer({
-        name: containerName,
+      const newContainer = await docker.createContainer({
+        name: revName,
         Image: imageTag,
         Env: [`PORT=${internalPort}`],
         Labels: {
@@ -69,39 +153,59 @@ export function createDockerRunner(deps: DockerRunnerDeps = {}): Runner {
         },
         HostConfig: {
           NetworkMode: network,
-        },
+          RestartPolicy: { Name: 'always' },
+        } as any,
       });
 
-      await container.start();
-      const info = await container.inspect();
-      const container_id = info.Id;
+      await newContainer.start();
+      const newInfo = await newContainer.inspect();
+      const newContainerId = newInfo.Id;
 
-      await logger.log(`Container started with ID ${container_id.slice(0, 12)}`);
+      await logger.log(`[handoff] New container ${revName} started (${newContainerId.slice(0, 12)}), waiting for container to be running`);
 
-      // Poll until running/healthy or terminal failure
-      const deadline = Date.now() + healthCheckTimeoutMs;
-      while (Date.now() <= deadline) {
-        const state = (await container.inspect()).State;
-        const status = state.Status ?? 'unknown';
-        const health = (state as { Health?: { Status?: string } }).Health?.Status;
+      // Wait for container to be in "running" state before attempting rename
+      await waitUntilContainerRunning(newContainer, healthCheckIntervalMs, healthCheckTimeoutMs);
 
-        if (status === 'running' && (!health || health === 'healthy')) {
-          await logger.log(`Container ${containerName} is running`);
-          return { container_id, container_name: containerName, internal_port: internalPort };
+      await logger.log(`[handoff] New container healthy — renaming ${revName} → ${stableName}`);
+
+      // Remove the old stable-named container before rename so Docker doesn't error
+      if (oldContainerName) {
+        try {
+          const old = docker.getContainer(oldContainerName);
+          await old.rename({ name: `${stableName}-draining-${Date.now()}` });
+          await logger.log(`[handoff] Old container renamed away from stable slot`);
+        } catch (err: unknown) {
+          if ((err as { statusCode?: number }).statusCode !== 404) throw err;
         }
-
-        if (status === 'exited' || status === 'dead' || health === 'unhealthy') {
-          throw new DeployFailedError(
-            `Container failed health check (status=${status}, health=${health ?? 'none'})`,
-          );
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, healthCheckIntervalMs));
       }
 
-      throw new DeployFailedError(
-        `Container did not become healthy within ${healthCheckTimeoutMs}ms`,
-      );
+      // Rename new container to stable name so Caddy keeps routing to the same hostname
+      await newContainer.rename({ name: stableName });
+      await logger.log(`[handoff] Route slot ${stableName} now points to new container ${newContainerId.slice(0, 12)}`);
+
+      // Wait for the app to actually respond via HTTP (not just container running)
+      await logger.log(`[handoff] Waiting for app to respond on http://${stableName}:${internalPort}/`);
+      await waitUntilAppResponding(stableName, internalPort, healthCheckIntervalMs, healthCheckTimeoutMs);
+      await logger.log(`[handoff] App is responding — deployment is live`);
+
+      // Drain old container asynchronously so we don't hold up the pipeline
+      if (oldContainerId && oldContainerName) {
+        const drainName = `${stableName}-draining-${oldContainerId.slice(0, 8)}`;
+        drainContainer(docker, drainName, drainTimeoutMs, logger).catch((e) => {
+          console.error(`[handoff] Background drain failed for ${drainName}:`, e);
+        });
+      }
+
+      const result: RunResult = {
+        container_id: newContainerId,
+        container_name: stableName,
+        internal_port: internalPort,
+      };
+      if (oldContainerId) result.previous_container_id = oldContainerId;
+      if (oldContainerName) result.previous_container_name = oldContainerName;
+
+      await logger.log(`Container ${stableName} is running`);
+      return result;
     },
   };
 }

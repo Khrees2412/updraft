@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Deployment } from '@updraft/shared-types';
 import { cancelDeployment, createDeployment, listDeployments, retryDeployment } from '../lib/api';
@@ -6,11 +6,53 @@ import { LogViewer } from '../components/log-viewer';
 import { FolderPicker, type PickedFolder } from '../components/folder-picker';
 import { createTarBlob } from '../lib/tar';
 import { useToast } from '../components/toast';
+import { GitBranch, RefreshCw, X, Layers, Clock, ExternalLink } from 'lucide-react';
 
 type SourceMode = 'git' | 'upload';
 
-function formatDate(value: string): string {
-  return new Date(value).toLocaleString();
+function useRelativeTime(value: string) {
+  const [label, setLabel] = useState(() => relativeTime(value));
+  useEffect(() => {
+    const tick = () => setLabel(relativeTime(value));
+    const id = setInterval(tick, 30_000);
+    return () => clearInterval(id);
+  }, [value]);
+  return label;
+}
+
+function relativeTime(value: string): string {
+  const diff = Date.now() - new Date(value).getTime();
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+function DeploymentTime({ value }: { value: string }) {
+  const relative = useRelativeTime(value);
+  return (
+    <span className="deployment-time" title={new Date(value).toLocaleString()}>
+      <Clock size={11} />
+      {relative}
+    </span>
+  );
+}
+
+function SkeletonRow() {
+  return (
+    <li className="deployment-row skeleton-row" aria-hidden>
+      <div className="deployment-info">
+        <div className="skeleton skeleton-id" />
+        <div className="skeleton skeleton-source" />
+      </div>
+      <div className="deployment-meta">
+        <div className="skeleton skeleton-pill" />
+        <div className="skeleton skeleton-time" />
+      </div>
+    </li>
+  );
 }
 
 export function AppPage() {
@@ -61,9 +103,9 @@ export function AppPage() {
   const [isPacking, setIsPacking] = useState(false);
 
   const submitLabel = useMemo(() => {
-    if (isPacking) return 'Packing...';
+    if (isPacking) return 'Packing…';
     if (createMutation.isPending) {
-      return mode === 'git' ? 'Queueing repo...' : 'Uploading...';
+      return mode === 'git' ? 'Queueing…' : 'Uploading…';
     }
     return 'Deploy';
   }, [createMutation.isPending, isPacking, mode]);
@@ -110,6 +152,8 @@ export function AppPage() {
       });
   };
 
+  const isSubmitting = createMutation.isPending || isPacking;
+
   return (
     <main className="page-shell">
       <header className="page-header">
@@ -142,6 +186,7 @@ export function AppPage() {
                 className={mode === 'git' ? 'toggle-button active' : 'toggle-button'}
                 onClick={() => setMode('git')}
               >
+                <GitBranch size={13} />
                 Git
               </button>
               <button
@@ -149,13 +194,14 @@ export function AppPage() {
                 className={mode === 'upload' ? 'toggle-button active' : 'toggle-button'}
                 onClick={() => setMode('upload')}
               >
+                <Layers size={13} />
                 Upload
               </button>
             </div>
 
             {mode === 'git' ? (
               <label className="field">
-                <label>Repository URL</label>
+                <span>Repository URL</span>
                 <input
                   type="url"
                   placeholder="https://github.com/owner/repo"
@@ -169,7 +215,7 @@ export function AppPage() {
                 <FolderPicker
                   picked={picked}
                   onPicked={setPicked}
-                  disabled={createMutation.isPending || isPacking}
+                  disabled={isSubmitting}
                 />
               </div>
             )}
@@ -181,8 +227,9 @@ export function AppPage() {
             <button
               type="submit"
               className="submit-button"
-              disabled={createMutation.isPending || isPacking}
+              disabled={isSubmitting}
             >
+              {isSubmitting && <span className="spinner" />}
               {submitLabel}
             </button>
           </form>
@@ -191,40 +238,58 @@ export function AppPage() {
         <section className="panel">
           <div className="deployments-header">
             <h2>Recent Deployments</h2>
+            {deploymentsQuery.isFetching && !deploymentsQuery.isLoading && (
+              <span className="refetch-indicator" title="Refreshing…">
+                <RefreshCw size={13} className="spin" />
+              </span>
+            )}
           </div>
 
-          {deploymentsQuery.isLoading ? <p className="empty-state">Loading...</p> : null}
-          {deploymentsQuery.isError ? <p className="empty-state">{deploymentsQuery.error.message}</p> : null}
-
-          {!deploymentsQuery.isLoading && !deploymentsQuery.isError ? (
-            deploymentsQuery.data && deploymentsQuery.data.length > 0 ? (
-              <ul className="deployment-list">
-                {deploymentsQuery.data.map((deployment) => (
-                  <li
-                    key={deployment.id}
-                    className={`deployment-row${selectedDeployment?.id === deployment.id ? ' deployment-row--selected' : ''}`}
-                    onClick={() => setSelectedDeployment(deployment)}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => e.key === 'Enter' && setSelectedDeployment(deployment)}
-                  >
-                    <div className="deployment-info">
-                      <p className="deployment-id">{deployment.id}</p>
-                      <p className="deployment-source">{deployment.source_ref}</p>
-                      {deployment.live_url ? (
-                        <a className="deployment-url" href={deployment.live_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
-                          {deployment.live_url}
-                        </a>
-                      ) : null}
-                    </div>
-                    <div className="deployment-meta">
-                      <span className={`status-pill status-${deployment.status}`}>{deployment.status}</span>
+          {deploymentsQuery.isError ? (
+            <p className="empty-state">{deploymentsQuery.error.message}</p>
+          ) : deploymentsQuery.isLoading ? (
+            <ul className="deployment-list">
+              <SkeletonRow />
+              <SkeletonRow />
+              <SkeletonRow />
+            </ul>
+          ) : deploymentsQuery.data && deploymentsQuery.data.length > 0 ? (
+            <ul className="deployment-list">
+              {deploymentsQuery.data.map((deployment) => (
+                <li
+                  key={deployment.id}
+                  className={`deployment-row${selectedDeployment?.id === deployment.id ? ' deployment-row--selected' : ''}`}
+                  onClick={() => setSelectedDeployment(deployment)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => e.key === 'Enter' && setSelectedDeployment(deployment)}
+                >
+                  <div className="deployment-info">
+                    <p className="deployment-id">{deployment.id}</p>
+                    <p className="deployment-source">{deployment.source_ref}</p>
+                    {deployment.live_url ? (
+                      <a
+                        className="deployment-url"
+                        href={deployment.live_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <ExternalLink size={10} />
+                        {deployment.live_url}
+                      </a>
+                    ) : null}
+                  </div>
+                  <div className="deployment-meta">
+                    <StatusPill status={deployment.status} />
+                    <div className="deployment-actions">
                       {deployment.status === 'failed' && (
                         <button
                           className="row-action-btn retry-btn"
                           onClick={(e) => { e.stopPropagation(); retryMutation.mutate(deployment.id); }}
                           disabled={retryMutation.isPending}
                         >
+                          <RefreshCw size={10} />
                           Retry
                         </button>
                       )}
@@ -234,19 +299,24 @@ export function AppPage() {
                           onClick={(e) => { e.stopPropagation(); cancelMutation.mutate(deployment.id); }}
                           disabled={cancelMutation.isPending}
                         >
+                          <X size={10} />
                           Cancel
                         </button>
                       )}
-                      {deployment.image_tag ? <span className="image-tag">{deployment.image_tag}</span> : null}
-                      <span className="deployment-time">{formatDate(deployment.created_at)}</span>
                     </div>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="empty-state">No deployments yet</p>
-            )
-          ) : null}
+                    {deployment.image_tag ? <span className="image-tag">{deployment.image_tag}</span> : null}
+                    <DeploymentTime value={deployment.created_at} />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="empty-state">
+              <Layers size={28} strokeWidth={1.5} className="empty-state-icon" />
+              <p>No deployments yet</p>
+              <span>Your deployments will appear here once you trigger one.</span>
+            </div>
+          )}
         </section>
       </section>
 
@@ -260,5 +330,24 @@ export function AppPage() {
         />
       ) : null}
     </main>
+  );
+}
+
+const STATUS_META: Record<string, { label: string; dot: boolean }> = {
+  pending:   { label: 'Pending',   dot: false },
+  building:  { label: 'Building',  dot: true  },
+  deploying: { label: 'Deploying', dot: true  },
+  running:   { label: 'Running',   dot: true  },
+  failed:    { label: 'Failed',    dot: false },
+  cancelled: { label: 'Cancelled', dot: false },
+};
+
+function StatusPill({ status }: { status: string }) {
+  const meta = STATUS_META[status] ?? { label: status, dot: false };
+  return (
+    <span className={`status-pill status-${status}`}>
+      {meta.dot && <span className="status-dot" />}
+      {meta.label}
+    </span>
   );
 }

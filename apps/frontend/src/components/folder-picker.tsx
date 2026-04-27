@@ -199,7 +199,7 @@ export function FolderPicker({ picked, onPicked, disabled }: FolderPickerProps) 
       <p className="folder-drop-title">
         {isProcessing ? 'Reading folder...' : 'Drop a project folder here'}
       </p>
-      <p className="folder-drop-hint">or click to choose · node_modules, .git, build outputs are skipped</p>
+      <p className="folder-drop-hint">or click to choose · node_modules, .git, and root-level build outputs are skipped · include your lockfile (package-lock.json, bun.lockb, pnpm-lock.yaml) for correct runtime detection</p>
       {error ? <p className="form-message error">{error}</p> : null}
     </div>
   );

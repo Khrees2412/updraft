@@ -10,31 +10,53 @@ function fakeDocker(opts: {
   containerStates?: Array<{ Status: string; Health?: { Status: string } }>;
   startError?: Error;
   createError?: Error;
-}): Dockerode {
+  existingContainerId?: string;
+}): Dockerode & { renamedTo: string[]; stopped: string[]; removed: string[] } {
   let inspectCallCount = 0;
   const states = opts.containerStates ?? [{ Status: 'running' }];
+  const renamedTo: string[] = [];
+  const stopped: string[] = [];
+  const removed: string[] = [];
+
+  const makeContainer = (name: string) => ({
+    rename: async (o: { name: string }) => { renamedTo.push(o.name); },
+    stop: async () => { stopped.push(name); },
+    remove: async () => { removed.push(name); },
+    start: async () => {
+      if (opts.startError) throw opts.startError;
+    },
+    inspect: async () => {
+      const state = states[inspectCallCount] ?? states[states.length - 1];
+      inspectCallCount += 1;
+      return { Id: opts.existingContainerId ?? 'abc1234567890def1234567890abcdef12345678', State: state };
+    },
+  });
 
   return {
+    renamedTo,
+    stopped,
+    removed,
     listNetworks: async () =>
       (opts.networks ?? ['updraft_deployments']).map((Name) => ({ Name })),
     createNetwork: async () => ({}),
-    getContainer: () => ({
-      remove: async () => ({}),
-    }),
-    createContainer: async () => {
-      if (opts.createError) throw opts.createError;
-      return {
-        start: async () => {
-          if (opts.startError) throw opts.startError;
-        },
-        inspect: async () => {
-          const state = states[inspectCallCount] ?? states[states.length - 1];
-          inspectCallCount += 1;
-          return { Id: 'abc1234567890def1234567890abcdef12345678', State: state };
-        },
-      };
+    getContainer: (name: string) => {
+      if (name === 'dep-abc' && opts.existingContainerId) {
+        return {
+          inspect: async () => ({ Id: opts.existingContainerId }),
+          rename: async (o: { name: string }) => { renamedTo.push(o.name); },
+          stop: async () => { stopped.push(name); },
+          remove: async () => { removed.push(name); },
+        };
+      }
+      // Unknown containers: throw 404
+      const err = Object.assign(new Error('not found'), { statusCode: 404 });
+      return { inspect: async () => { throw err; }, rename: async () => {}, stop: async () => {}, remove: async () => {} };
     },
-  } as unknown as Dockerode;
+    createContainer: async (cfg: { name: string }) => {
+      if (opts.createError) throw opts.createError;
+      return makeContainer(cfg.name);
+    },
+  } as unknown as Dockerode & { renamedTo: string[]; stopped: string[]; removed: string[] };
 }
 
 function loggerStub() {
@@ -70,7 +92,6 @@ describe('docker runner', () => {
     expect(result.container_name).toBe('dep-abc');
     expect(result.internal_port).toBe(3000);
     expect(result.container_id).toMatch(/^[0-9a-f]{12,}$/i);
-    expect(logger.lines.some((l) => l.includes('Starting container dep-abc'))).toBe(true);
     expect(logger.lines.some((l) => l.includes('is running'))).toBe(true);
   });
 
@@ -145,6 +166,42 @@ describe('docker runner', () => {
       healthCheckTimeoutMs: 500,
     });
     const result = await runner.run({ deployment, imageTag: 'dep-abc:42', logger: loggerStub() });
+    expect(result.container_name).toBe('dep-abc');
+  });
+
+  it('B-03: performs zero-downtime handoff when an existing container is running', async () => {
+    const docker = fakeDocker({
+      containerStates: [{ Status: 'running' }],
+      existingContainerId: 'old000000000',
+    });
+    const runner = createDockerRunner({
+      docker,
+      network: 'testnet',
+      healthCheckIntervalMs: 1,
+      healthCheckTimeoutMs: 100,
+      drainTimeoutMs: 100,
+    });
+    const logger = loggerStub();
+    const result = await runner.run({ deployment, imageTag: 'dep-abc:42', logger });
+
+    // New container renamed to stable slot
+    expect(result.container_name).toBe('dep-abc');
+    // Previous container tracked
+    expect(result.previous_container_id).toBe('old000000000');
+    // Handoff log messages present
+    expect(logger.lines.some((l) => l.includes('[handoff]'))).toBe(true);
+    expect(logger.lines.some((l) => l.includes('renamed'))).toBe(true);
+  });
+
+  it('B-03: succeeds on first deploy (no prior container)', async () => {
+    const docker = fakeDocker({ containerStates: [{ Status: 'running' }] });
+    const runner = createDockerRunner({
+      docker,
+      healthCheckIntervalMs: 1,
+      healthCheckTimeoutMs: 100,
+    });
+    const result = await runner.run({ deployment, imageTag: 'dep-abc:42', logger: loggerStub() });
+    expect(result.previous_container_id).toBeUndefined();
     expect(result.container_name).toBe('dep-abc');
   });
 });

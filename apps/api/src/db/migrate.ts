@@ -45,6 +45,17 @@ export function runMigrations(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_deployment_builds_source
       ON deployment_builds(source_type, source_ref, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS build_cache (
+      id            TEXT PRIMARY KEY,
+      source_key    TEXT NOT NULL UNIQUE,
+      cache_ref     TEXT NOT NULL,
+      last_used_at  TEXT NOT NULL,
+      hit_count     INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_build_cache_source_key
+      ON build_cache(source_key);
   `);
 
   const columns = db
@@ -52,5 +63,11 @@ export function runMigrations(db: Database.Database): void {
     .all() as Array<{ name: string }>;
   if (!columns.some((column) => column.name === 'requested_image_tag')) {
     db.exec(`ALTER TABLE deployments ADD COLUMN requested_image_tag TEXT`);
+  }
+  if (!columns.some((column) => column.name === 'previous_container_id')) {
+    db.exec(`ALTER TABLE deployments ADD COLUMN previous_container_id TEXT`);
+  }
+  if (!columns.some((column) => column.name === 'previous_container_name')) {
+    db.exec(`ALTER TABLE deployments ADD COLUMN previous_container_name TEXT`);
   }
 }

@@ -24,6 +24,8 @@ export interface Deployment {
   container_id?: string;
   container_name?: string;
   internal_port?: number;
+  previous_container_id?: string;
+  previous_container_name?: string;
   route_path?: string;
   live_url?: string;
   created_at: string; // ISO 8601

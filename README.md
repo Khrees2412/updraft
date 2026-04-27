@@ -1,6 +1,6 @@
 # Updraft
 
-A local deployment pipeline. Paste a Git URL or upload a tarball, and it builds a container image with Railpack, runs it via Docker, and routes traffic through Caddy — all from `docker compose up`.
+A local deployment pipeline. Paste a Git URL or pick a project folder, and it builds a container image with Railpack, runs it via Docker, and routes traffic through Caddy — all from `docker compose up`.
 
 ## Running it
 
@@ -12,13 +12,9 @@ docker compose up --build
 
 Open **http://localhost:8080**. No env vars required — sensible defaults are baked in.
 
-**To deploy the bundled sample app**, archive it and upload via the UI:
+**To deploy the bundled sample app**, use the Upload tab in the UI: click the folder picker and select `apps/sample-app/`. The browser packages it into a tar archive automatically — no manual archiving needed.
 
-```bash
-tar -czf sample.tar.gz -C apps/sample-app .
-```
-
-Or paste any public Git URL — Railpack will detect the framework automatically.
+Or paste any public Git URL in the Git tab — Railpack will detect the framework automatically.
 
 Once a deployment reaches `running`, click its live URL (`http://localhost:8080/d/<id>`) — that's going through Caddy, not directly to the container.
 
@@ -34,19 +30,48 @@ Browser
 
 The API owns everything: SQLite persistence, the pipeline worker queue, and the SSE broker. The frontend is a Vite + React SPA — TanStack Query polls the deployments list, and a native `EventSource` handles the log stream.
 
+**Status states:** `pending → building → deploying → running`. Any non-terminal state can transition to `failed` or `cancelled`. `running`, `failed`, and `cancelled` are terminal. The UI shows a Cancel button for in-progress deployments and a Retry button for failed ones.
+
 **Pipeline stages:**
 
-1. `pending → building` — git clone or tar extract into a workspace dir, then `railpack build <workspace> --name dep-<id>:<ts>`
-2. `building → deploying` — dockerode creates and starts `dep-<id>` on the `updraft_deployments` bridge network
+1. `pending → building` — git clone or tar extract into a workspace dir, then `railpack build <workspace> --name dep-<id>:<ts>` (with BuildKit cache flags if a prior build exists for this source)
+2. `building → deploying` — dockerode starts a new container under a revision name, health-checks it until running, then renames it to the stable slot (`dep-<id>`); the old container is drained asynchronously
 3. `deploying → running` — route `/d/<id>` persisted, pushed to Caddy Admin API, deployment is live
 
-**Redeploy / rollback (bonus)** — every successful build is recorded in `deployment_builds`. You can list history with `GET /api/deployments/:id/builds`, then queue either `POST /api/deployments/:id/redeploy` or `POST /api/deployments/:id/rollback` with `{ "image_tag": "dep-...:..." }`. These flows reuse the image tag and skip Railpack.
+**Redeploy / rollback** — every successful build is recorded in `deployment_builds`. You can list history with `GET /api/deployments/:id/builds`, then queue either `POST /api/deployments/:id/redeploy` or `POST /api/deployments/:id/rollback` with `{ "image_tag": "dep-...:..." }`. These flows reuse the image tag and skip Railpack entirely. The log viewer shows image history and exposes Redeploy / Rollback buttons for each prior tag.
 
 Failure at any stage sets status to `failed` and writes an error log entry — the terminal error shows up in the log viewer.
 
 **Log streaming** — `GET /deployments/:id/logs/stream` replays historical rows from SQLite first, then switches to live events from an in-process pub/sub broker. The client reconnects automatically on disconnect and resumes from the last `sequence` via `Last-Event-ID`, so nothing is lost across reconnects.
 
 **Caddy routing** — static routes for `/api` and `/` are in `infra/caddy/caddy.json`. When a deployment finishes, the API calls Caddy's Admin API to insert a `reverse_proxy` route for `/d/:id` pointing at `dep-<id>:3000` on the internal Docker network. No Caddyfile reloads, no restarts.
+
+## Build cache reuse (B-02)
+
+Every time Railpack builds from a given source (git URL or upload path), the build step:
+
+1. Computes a stable cache key — 16-char SHA-256 of `source_type:source_ref`
+2. Checks `build_cache` in SQLite for a prior entry under that key
+3. Logs `[cache] HIT key=... hits=N` or `[cache] MISS key=...` at build start
+4. Passes `--cache-from` (on hits) and `--cache-to` (always) to `railpack build` so BuildKit reuses layer state
+
+Cache references default to a local directory (`BUILD_CACHE_DIR`, default `/tmp/updraft-cache`). Set `BUILD_CACHE_REGISTRY` to a registry host to use remote cache storage instead (`type=registry`).
+
+The `build_cache` table tracks `source_key`, `cache_ref`, `last_used_at`, and `hit_count` — all visible in the SQLite file if you want to inspect or prune cache entries manually.
+
+## Zero-downtime redeploy handoff (B-03)
+
+Every deploy uses a two-container swap instead of a stop-then-start:
+
+1. Start new container under a timestamped revision name: `dep-<id>-rev-<ts>`
+2. Health-check it until `running` (or timeout → `failed`)
+3. Rename the existing stable container away from its slot
+4. Rename the revision container to the stable slot (`dep-<id>`) — Caddy keeps routing to the same hostname with no config change
+5. Drain the old container asynchronously: SIGTERM, wait up to `DRAIN_TIMEOUT_MS` (default 10 s), then SIGKILL + remove
+
+Because Caddy always proxies to `dep-<id>` by name and the rename is atomic from Docker's perspective, in-flight requests complete against the old container while new requests go to the new one. The previous container's ID and name are stored on the deployment row (`previous_container_id`, `previous_container_name`) for audit purposes.
+
+Drain failures are logged as warnings and never fail the deployment — if the old container is already gone, the step is a no-op.
 
 ## Decisions I'd defend
 
@@ -60,19 +85,17 @@ Failure at any stage sets status to `failed` and writes an error log entry — t
 
 **Railpack over Dockerfiles** — the point is zero-config builds. Railpack detects the framework, handles the image. The tradeoff is less control over the output image; acceptable for this use case.
 
-**Docker socket mount** — required to let the API create containers and call `docker load` after Railpack builds an image. Known risk: socket access is root-equivalent on the host. Fine for local dev, never in production.
+**Docker socket mount** — required for two things: Railpack uses it (via the mounted socket and the BuildKit sidecar) to build and import images, and dockerode uses it to create, inspect, rename, and stop containers. Known risk: socket access is root-equivalent on the host. Fine for local dev, never in production.
 
 ## What I'd change with more time
 
 **Persistent queue** — right now in-flight jobs are gone if the API restarts. A startup sweep of `pending`/`building` rows would fix this in maybe 20 lines.
 
-**Graceful redeploy** — currently starts a new container and leaves the old one running. A proper handoff (start new → health check → remove old) would give zero-downtime redeploys.
-
-**Build cache** — Railpack supports `--cache-from` via BuildKit. Not wired up here; would cut rebuild times significantly for repos with stable deps.
-
 **Frontend push instead of poll** — the deployments list polls every 3 s. An SSE channel for status updates would eliminate the delay without much more complexity.
 
-**Upload validation** — the upload path runs `tar -xf` on whatever arrives. `.zip` files will fail silently. Should branch on file extension and call `unzip` for zip archives.
+**Upload validation** — the API's upload path runs `tar -xf` on whatever arrives. The UI always sends a valid tar (packed client-side), but a direct API call with a `.zip` body would fail silently at extraction. Should validate the content type and branch on format.
+
+**Cache eviction** — the `build_cache` table grows unboundedly. A simple LRU sweep keyed on `last_used_at` would keep disk usage bounded; not implemented because there's no cache size pressure in local dev.
 
 ## What broke while building this
 
@@ -104,7 +127,7 @@ The `dist/` test files end up in the vitest run alongside the `src/` files — t
 pnpm --filter @updraft/api exec vitest run
 ```
 
-108 tests, all passing. Coverage focuses on the pipeline worker (happy path + every failure mode), the repository layer (status transitions, log ordering), and the deployment routes.
+128 tests, all passing. Coverage focuses on the pipeline worker (happy path + every failure mode), the repository layer (status transitions, log ordering), the deployment routes, and the build cache and zero-downtime handoff logic.
 
 ## Brimble deploy + feedback
 

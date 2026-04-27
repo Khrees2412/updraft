@@ -3,6 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import type { Deployment, DeploymentBuild, DeploymentLogEvent } from '@updraft/shared-types';
 import { listDeploymentBuilds, redeployDeployment, retryDeployment, streamDeploymentLogs } from '../lib/api';
 import { useToast } from './toast';
+import { Maximize2, Minimize2, X, RefreshCw, RotateCcw } from 'lucide-react';
 
 type StreamState = 'connecting' | 'live' | 'error' | 'done';
 
@@ -124,7 +125,8 @@ return (
                 disabled={retryMutation.isPending}
                 onClick={() => retryMutation.mutate()}
               >
-                {retryMutation.isPending ? 'Retrying...' : 'Retry'}
+                <RefreshCw size={12} className={retryMutation.isPending ? 'spin' : ''} />
+                {retryMutation.isPending ? 'Retrying…' : 'Retry'}
               </button>
             )}
           </div>
@@ -134,9 +136,11 @@ return (
               onClick={() => setIsFullscreen(!isFullscreen)}
               aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
             >
-              {isFullscreen ? '⤓' : '⤒'}
+              {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
             </button>
-            <button className="log-close-button" onClick={onClose} aria-label="Close log viewer">×</button>
+            <button className="log-close-button" onClick={onClose} aria-label="Close log viewer">
+              <X size={15} />
+            </button>
           </div>
         </div>
       <div className="build-history">
@@ -162,6 +166,7 @@ return (
                     disabled={redeployMutation.isPending || isCurrent}
                     onClick={() => redeployMutation.mutate({ imageTag: build.image_tag, action: 'redeploy' })}
                   >
+                    <RefreshCw size={10} />
                     Redeploy
                   </button>
                   <button
@@ -169,6 +174,7 @@ return (
                     disabled={redeployMutation.isPending || isCurrent}
                     onClick={() => redeployMutation.mutate({ imageTag: build.image_tag, action: 'rollback' })}
                   >
+                    <RotateCcw size={10} />
                     Rollback
                   </button>
                 </div>

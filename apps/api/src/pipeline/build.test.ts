@@ -5,6 +5,7 @@ import { createRailpackBuilder } from './build.js';
 import type { StageLogger } from './logger.js';
 import { BuildFailedError } from '../lib/errors.js';
 import type { Deployment } from '@updraft/shared-types';
+import type { BuildCacheRepository } from '../db/repository.js';
 
 function fakeSpawn(stdoutLines: string[], exitCode: number, captured?: { args?: readonly string[] }) {
   return ((_cmd: string, args: readonly string[]) => {
@@ -40,6 +41,15 @@ const deployment: Deployment = {
   updated_at: '2025-01-01T00:00:00.000Z',
 };
 
+function stubCacheRepo(existing?: { cache_ref: string; hit_count: number }): BuildCacheRepository & { upserted: string[] } {
+  const upserted: string[] = [];
+  return {
+    upserted,
+    get: () => existing ? { id: 'x', source_key: 'k', last_used_at: '', ...existing } : null,
+    upsert: (_key: string, ref: string) => { upserted.push(ref); return { id: 'x', source_key: 'k', cache_ref: ref, last_used_at: '', hit_count: 0 }; },
+  };
+}
+
 describe('railpack builder', () => {
   it('produces a deterministic image tag and streams output', async () => {
     const captured: { args?: readonly string[] } = {};
@@ -56,6 +66,10 @@ describe('railpack builder', () => {
     expect(captured.args?.[1]).toContain('/root/.local/bin/railpack');
     expect(captured.args?.[1]).toContain('build');
     expect(captured.args?.[1]).toContain(wsPath);
+    expect(captured.args?.[1]).toContain('--cache-key');
+    expect(captured.args?.[1]).not.toContain('--cache-from');
+    expect(captured.args?.[1]).not.toContain('--cache-to');
+    expect(captured.args?.[1]).toContain('--progress=plain');
     expect(logger.lines).toContain('Detected Node.js');
     expect(logger.lines).toContain('Building...');
   });
@@ -68,5 +82,38 @@ describe('railpack builder', () => {
     await expect(
       builder.build({ deployment, workspacePath: '/tmp/ws', logger: loggerStub() }),
     ).rejects.toBeInstanceOf(BuildFailedError);
+  });
+
+  it('logs a cache MISS and calls upsert on first build for a source', async () => {
+    const cache = stubCacheRepo();
+    const logger = loggerStub();
+    const captured: { args?: readonly string[] } = {};
+    const builder = createRailpackBuilder({
+      spawn: fakeSpawn([], 0, captured),
+      now: () => new Date('2026-04-24T00:00:00.000Z'),
+      cacheRepo: cache,
+    });
+    await builder.build({ deployment, workspacePath: '/tmp/ws', logger });
+    expect(logger.lines.some((l) => l.includes('[cache] MISS'))).toBe(true);
+    expect(cache.upserted).toHaveLength(1);
+    // must pass --cache-key (not --cache-from/--cache-to which don't exist in railpack)
+    expect(captured.args?.[1]).toContain('--cache-key');
+    expect(captured.args?.[1]).not.toContain('--cache-from');
+    expect(captured.args?.[1]).not.toContain('--cache-to');
+  });
+
+  it('logs a cache HIT on second build for the same source', async () => {
+    const cache = stubCacheRepo({ cache_ref: 'somekey', hit_count: 3 });
+    const logger = loggerStub();
+    const captured: { args?: readonly string[] } = {};
+    const builder = createRailpackBuilder({
+      spawn: fakeSpawn([], 0, captured),
+      now: () => new Date('2026-04-24T00:00:00.000Z'),
+      cacheRepo: cache,
+    });
+    await builder.build({ deployment, workspacePath: '/tmp/ws', logger });
+    expect(logger.lines.some((l) => l.includes('[cache] HIT'))).toBe(true);
+    expect(cache.upserted).toHaveLength(1);
+    expect(captured.args?.[1]).toContain('--cache-key');
   });
 });
