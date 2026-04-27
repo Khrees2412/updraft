@@ -131,6 +131,20 @@ pnpm --filter @updraft/api exec vitest run
 
 ## Brimble deploy + feedback
 
-> **Deployed:** *(link goes here)*
->
-> *(Feedback goes here — fill in after deploying. Be direct: what broke, what was confusing, what you'd change.)*
+> **Deployed:** *(link goes here — fill in after deploying)*
+
+**How the deploy is set up:**
+
+The frontend is deployed as a static SPA. Brimble settings:
+
+| Setting | Value |
+|---|---|
+| Build command | `pnpm build:brimble` |
+| Output directory | `public` |
+| Root directory | `.` (repo root) |
+
+`pnpm build:brimble` runs `pnpm --filter @updraft/frontend build` (Vite build) and copies the output to `public/` at the repo root. The `brimble.json` SPA rewrite (`/* → /index.html`) is already at the repo root.
+
+The Vite config resolves `@updraft/shared-types` directly from its TypeScript source via a `resolve.alias`, so there's no need to pre-build the package before building the frontend.
+
+> **Feedback:** *(fill in after deploying — be direct: what broke, what was confusing, what you'd change)*

@@ -8,6 +8,7 @@
     "dev:api": "pnpm --filter @updraft/api dev",
     "dev:frontend": "pnpm --filter @updraft/frontend dev",
     "build": "pnpm -r build",
+    "build:brimble": "pnpm --filter @updraft/frontend build && rm -rf public && cp -r apps/frontend/dist ./public",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
