@@ -59,6 +59,8 @@ function fakeDocker(opts: {
   } as unknown as Dockerode & { renamedTo: string[]; stopped: string[]; removed: string[] };
 }
 
+const fetchOk = async (_url: string) => ({ status: 200 });
+
 function loggerStub() {
   const lines: string[] = [];
   return {
@@ -85,6 +87,7 @@ describe('docker runner', () => {
       internalPort: 3000,
       healthCheckIntervalMs: 1,
       healthCheckTimeoutMs: 100,
+      fetchFn: fetchOk,
     });
     const logger = loggerStub();
     const result = await runner.run({ deployment, imageTag: 'dep-abc:42', logger });
@@ -108,6 +111,7 @@ describe('docker runner', () => {
       network: 'new_network',
       healthCheckIntervalMs: 1,
       healthCheckTimeoutMs: 100,
+      fetchFn: fetchOk,
     });
     await runner.run({ deployment, imageTag: 'dep-abc:42', logger: loggerStub() });
     expect(networkCreated).toBe(true);
@@ -126,6 +130,7 @@ describe('docker runner', () => {
       network: 'testnet',
       healthCheckIntervalMs: 1,
       healthCheckTimeoutMs: 100,
+      fetchFn: fetchOk,
     });
     await runner.run({ deployment, imageTag: 'dep-abc:42', logger: loggerStub() });
     expect(networkCreated).toBe(false);
@@ -136,6 +141,7 @@ describe('docker runner', () => {
       docker: fakeDocker({ containerStates: [{ Status: 'exited' }] }),
       healthCheckIntervalMs: 1,
       healthCheckTimeoutMs: 100,
+      fetchFn: fetchOk,
     });
     await expect(
       runner.run({ deployment, imageTag: 'dep-abc:42', logger: loggerStub() }),
@@ -164,6 +170,7 @@ describe('docker runner', () => {
       }),
       healthCheckIntervalMs: 1,
       healthCheckTimeoutMs: 500,
+      fetchFn: fetchOk,
     });
     const result = await runner.run({ deployment, imageTag: 'dep-abc:42', logger: loggerStub() });
     expect(result.container_name).toBe('dep-abc');
@@ -180,6 +187,7 @@ describe('docker runner', () => {
       healthCheckIntervalMs: 1,
       healthCheckTimeoutMs: 100,
       drainTimeoutMs: 100,
+      fetchFn: fetchOk,
     });
     const logger = loggerStub();
     const result = await runner.run({ deployment, imageTag: 'dep-abc:42', logger });
@@ -199,6 +207,7 @@ describe('docker runner', () => {
       docker,
       healthCheckIntervalMs: 1,
       healthCheckTimeoutMs: 100,
+      fetchFn: fetchOk,
     });
     const result = await runner.run({ deployment, imageTag: 'dep-abc:42', logger: loggerStub() });
     expect(result.previous_container_id).toBeUndefined();

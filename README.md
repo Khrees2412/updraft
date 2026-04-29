@@ -195,7 +195,7 @@ docker-compose.yml
 pnpm --filter @updraft/api exec vitest run
 ```
 
-128 tests, all passing. Coverage: pipeline worker (happy path and every failure mode), repository layer (status transitions, log ordering), deployment routes, build cache, and zero-downtime container handoff.
+71 tests, all passing. Coverage: pipeline worker (happy path and every failure mode), repository layer (status transitions, log ordering), deployment routes, build cache, and zero-downtime container handoff.
 
 ---
 

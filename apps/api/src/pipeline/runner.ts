@@ -28,6 +28,8 @@ export interface DockerRunnerDeps {
   healthCheckIntervalMs?: number;
   healthCheckTimeoutMs?: number;
   drainTimeoutMs?: number;
+  // Injectable for tests — defaults to real fetch
+  fetchFn?: (url: string) => Promise<{ status: number }>;
 }
 
 export interface DockerRunner {
@@ -71,17 +73,12 @@ async function waitUntilAppResponding(
   internalPort: number,
   intervalMs: number,
   timeoutMs: number,
+  fetchFn: (url: string) => Promise<{ status: number }>,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 2000);
-      const res = await fetch(`http://${containerName}:${internalPort}/`, {
-        method: 'GET',
-        signal: controller.signal,
-      } as any);
-      clearTimeout(timeout);
+      const res = await fetchFn(`http://${containerName}:${internalPort}/`);
       if (res.status < 500) return;
     } catch {
       // App isn't ready yet — keep waiting
@@ -119,6 +116,7 @@ export function createDockerRunner(deps: DockerRunnerDeps = {}): DockerRunner {
   const healthCheckIntervalMs = deps.healthCheckIntervalMs ?? 1000;
   const healthCheckTimeoutMs = deps.healthCheckTimeoutMs ?? 30000;
   const drainTimeoutMs = deps.drainTimeoutMs ?? Number(process.env['DRAIN_TIMEOUT_MS'] ?? 10000);
+  const fetchFn = deps.fetchFn ?? ((url: string) => fetch(url));
 
   return {
     docker,
@@ -193,7 +191,7 @@ export function createDockerRunner(deps: DockerRunnerDeps = {}): DockerRunner {
 
         // Wait for the app to actually respond via HTTP (not just container running)
         await logger.log(`[handoff] Waiting for app to respond on http://${stableName}:${internalPort}/`);
-        await waitUntilAppResponding(stableName, internalPort, healthCheckIntervalMs, healthCheckTimeoutMs);
+        await waitUntilAppResponding(stableName, internalPort, healthCheckIntervalMs, healthCheckTimeoutMs, fetchFn);
         await logger.log(`[handoff] App is responding — deployment is live`);
       } catch (err) {
         // Rollback: remove the new container if we crashed between creation and successful rename.
