@@ -34,8 +34,10 @@
   --border-radius-full: 9999px;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.08);
+  --shadow-md:
+    0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
+  --shadow-lg:
+    0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.08);
 
   font-family: var(--font-sans);
   color: var(--color-black);
@@ -124,7 +126,11 @@ input {
   font-weight: 700;
   letter-spacing: -0.04em;
   line-height: 1.15;
-  background: linear-gradient(135deg, var(--color-black) 30%, var(--color-gray-600));
+  background: linear-gradient(
+    135deg,
+    var(--color-black) 30%,
+    var(--color-gray-600)
+  );
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -360,7 +366,9 @@ input {
   font-size: 0.875rem;
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 0.15s, transform 0.1s;
+  transition:
+    opacity 0.15s,
+    transform 0.1s;
   letter-spacing: -0.01em;
 }
 
@@ -406,7 +414,9 @@ input {
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .spin {
@@ -591,8 +601,15 @@ input {
 }
 
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%       { opacity: 0.5; transform: scale(0.7); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.7);
+  }
 }
 
 /* ─── Row Actions ────────────────────────────────────────── */
@@ -672,8 +689,12 @@ input {
 /* ─── Skeleton Loading ───────────────────────────────────── */
 
 @keyframes shimmer {
-  0%   { background-position: -400px 0; }
-  100% { background-position: 400px 0; }
+  0% {
+    background-position: -400px 0;
+  }
+  100% {
+    background-position: 400px 0;
+  }
 }
 
 .skeleton {
@@ -692,10 +713,24 @@ input {
   pointer-events: none;
 }
 
-.skeleton-id     { height: 13px; width: 120px; }
-.skeleton-source { height: 11px; width: 180px; margin-top: 6px; }
-.skeleton-pill   { height: 18px; width: 60px;  border-radius: 9999px; }
-.skeleton-time   { height: 10px; width: 50px;  }
+.skeleton-id {
+  height: 13px;
+  width: 120px;
+}
+.skeleton-source {
+  height: 11px;
+  width: 180px;
+  margin-top: 6px;
+}
+.skeleton-pill {
+  height: 18px;
+  width: 60px;
+  border-radius: 9999px;
+}
+.skeleton-time {
+  height: 10px;
+  width: 50px;
+}
 
 /* ─── Log Panel ──────────────────────────────────────────── */
 
@@ -714,8 +749,12 @@ input {
 }
 
 @keyframes slideUp {
-  from { transform: translateY(100%); }
-  to   { transform: translateY(0); }
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
 }
 
 .log-panel--fullscreen {
@@ -766,7 +805,7 @@ input {
 }
 
 .stream-indicator.stream-live::before {
-  content: '';
+  content: "";
   display: inline-block;
   width: 6px;
   height: 6px;
@@ -865,8 +904,12 @@ input {
   color: var(--color-gray-500);
 }
 
-.build-history-meta.success { color: var(--color-green-400); }
-.build-history-meta.error   { color: var(--color-red-400); }
+.build-history-meta.success {
+  color: var(--color-green-400);
+}
+.build-history-meta.error {
+  color: var(--color-red-400);
+}
 
 .build-chip-list {
   display: flex;
@@ -875,9 +918,28 @@ input {
   padding-bottom: 0.125rem;
 }
 
-.build-chip-list::-webkit-scrollbar { height: 3px; }
-.build-chip-list::-webkit-scrollbar-track { background: transparent; }
-.build-chip-list::-webkit-scrollbar-thumb { background: var(--color-gray-700); border-radius: 9999px; }
+.build-chip-list {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding-bottom: 0.125rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-gray-700) transparent;
+}
+
+.build-chip-list::-webkit-scrollbar {
+  height: 6px;
+}
+.build-chip-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.build-chip-list::-webkit-scrollbar-thumb {
+  background: var(--color-gray-700);
+  border-radius: 9999px;
+}
+.build-chip-list::-webkit-scrollbar-thumb:hover {
+  background: var(--color-gray-500);
+}
 
 .build-chip {
   display: inline-flex;
@@ -953,11 +1015,23 @@ input {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-gray-700) transparent;
 }
 
-.log-scroll::-webkit-scrollbar { width: 6px; }
-.log-scroll::-webkit-scrollbar-track { background: transparent; }
-.log-scroll::-webkit-scrollbar-thumb { background: var(--color-gray-700); border-radius: 9999px; }
+.log-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+.log-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.log-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-gray-700);
+  border-radius: 9999px;
+}
+.log-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--color-gray-500);
+}
 
 .log-line {
   display: grid;
@@ -988,9 +1062,15 @@ input {
   opacity: 0.9;
 }
 
-.log-stage-build  .log-stage-label { color: var(--color-blue-400); }
-.log-stage-deploy .log-stage-label { color: var(--color-green-400); }
-.log-stage-system .log-stage-label { color: #fbbf24; }
+.log-stage-build .log-stage-label {
+  color: var(--color-blue-400);
+}
+.log-stage-deploy .log-stage-label {
+  color: var(--color-green-400);
+}
+.log-stage-system .log-stage-label {
+  color: #fbbf24;
+}
 
 .log-msg {
   word-break: break-word;
@@ -1027,18 +1107,32 @@ input {
 }
 
 @keyframes toast-in {
-  from { opacity: 0; transform: translateY(0.5rem) scale(0.97); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
-.toast-success { background: var(--color-green-600); }
-.toast-error   { background: var(--color-red-600); }
-.toast-info    { background: var(--color-gray-700); }
+.toast-success {
+  background: var(--color-green-600);
+}
+.toast-error {
+  background: var(--color-red-600);
+}
+.toast-info {
+  background: var(--color-gray-700);
+}
 
 /* ─── Responsive ─────────────────────────────────────────── */
 
 @media (max-width: 900px) {
-  .hero h1 { font-size: 1.75rem; }
+  .hero h1 {
+    font-size: 1.75rem;
+  }
 
   .deployment-row {
     flex-direction: column;

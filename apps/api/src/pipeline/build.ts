@@ -82,7 +82,13 @@ export function createRailpackBuilder(deps: RailpackBuilderDeps = {}): Builder {
         async (line) => {
           await logger.log(line);
         },
-        deps.spawn ? { spawn: deps.spawn } : {},
+        {
+          ...(deps.spawn ? { spawn: deps.spawn } : {}),
+          env: {
+            ...process.env,
+            MISE_HTTP_TIMEOUT: process.env.MISE_HTTP_TIMEOUT ?? "120",
+          },
+        },
         timeoutMs,
       );
       if (result.exitCode !== 0) {

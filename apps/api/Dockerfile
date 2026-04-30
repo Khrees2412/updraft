@@ -1,9 +1,11 @@
+# syntax=docker/dockerfile:1
 FROM node:20-bookworm-slim AS base
 
 # Build deps for native modules (better-sqlite3) + git for clones
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 make g++ git curl ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    python3 make g++ git curl ca-certificates
 
 RUN corepack enable && corepack prepare pnpm@9.1.0 --activate
 
@@ -14,7 +16,8 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.base.json ./
 COPY packages/shared-types/package.json ./packages/shared-types/
 COPY apps/api/package.json ./apps/api/
 
-RUN pnpm install --frozen-lockfile
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile
 
 COPY packages/shared-types/ ./packages/shared-types/
 COPY apps/api/ ./apps/api/
@@ -32,9 +35,10 @@ FROM node:20-bookworm-slim AS runtime
 #   ca-certificates, curl — railpack install + general TLS
 #   docker.io     — railpack invokes `docker load` to import the built image
 #                    into the host daemon (via the mounted /var/run/docker.sock)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl ca-certificates docker.io \
-  && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    git curl ca-certificates docker.io
 
 # Railpack CLI — installs to $HOME/.local/bin/railpack
 RUN mkdir -p /root/.local/bin \

@@ -19,7 +19,8 @@ async function fetchJson(url: string, init?: RequestInit): Promise<unknown> {
     const body = await res.text().catch(() => '');
     throw new Error(`Caddy admin API error ${res.status}: ${body}`);
   }
-  return res.json();
+  const text = await res.text();
+  return text.length > 0 ? JSON.parse(text) : null;
 }
 
 async function getConfig(adminUrl: string): Promise<Record<string, unknown>> {

@@ -21,6 +21,10 @@ services:
     build:
       context: .
       dockerfile: apps/frontend/Dockerfile
+      cache_from:
+        - type=local,src=/tmp/buildcache/frontend
+      cache_to:
+        - type=local,dest=/tmp/buildcache/frontend,mode=max
     networks:
       - deployments
     restart: unless-stopped
@@ -36,6 +40,10 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+      cache_from:
+        - type=local,src=/tmp/buildcache/api
+      cache_to:
+        - type=local,dest=/tmp/buildcache/api,mode=max
     environment:
       PORT: "8088"
       DB_PATH: /data/updraft.db
@@ -48,6 +56,8 @@ services:
       # Railpack uses BuildKit directly (gRPC). Point at the sidecar container
       # — railpack will spawn a `docker exec` against it via the mounted socket.
       BUILDKIT_HOST: "docker-container://updraft-buildkit-1"
+      BUILD_TIMEOUT_MS: "1800000"  # 30 min — cold builds pulling base layers can exceed 10 min
+      MISE_HTTP_TIMEOUT: "120"     # seconds — GitHub asset downloads can be slow on aarch64
     volumes:
       - api_data:/data
       - ./apps/api/data/workspaces:/app/workspaces
